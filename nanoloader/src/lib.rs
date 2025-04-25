@@ -18,7 +18,9 @@ pub trait NanoHal {
 
 pub fn boot<HAL:NanoHal>() -> ! {
     // SAFETY: It is assumed that the HAL const parameters are valid.
-    let fwsize = unsafe { *((HAL::FW_START + HAL::FW_SIZE_OFF) as *const usize) };
+    let fwsize = unsafe {
+        core::ptr::read_volatile((HAL::FW_START + HAL::FW_SIZE_OFF) as *const usize)
+    };
 
     // Check fwsize
     if fwsize > (HAL::FW_END - HAL::FW_START) {
@@ -41,18 +43,23 @@ pub fn boot<HAL:NanoHal>() -> ! {
     }
 
     // SAFETY: CRC pointer address and alignment have been checked.
-    let fwcrc_exp = unsafe { *fwcrc_ptr };
+    let fwcrc_exp = unsafe { core::ptr::read_volatile(fwcrc_ptr) };
 
     // SAFETY: It is assumed that the HAL const parameters are valid, and fwsize has been checked.
     let fwslice = unsafe { core::slice::from_raw_parts(HAL::FW_START as *const u8, fwsize) };
 
+    // Calculate firmware CRC
     const CRC32:crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
     let fwcrc_act = CRC32.checksum(fwslice);
 
+    // Check firmware CRC
     if fwcrc_act != fwcrc_exp {
         panic!();
     }
 
-    // SAFETY: Since CRC of firmware is valid, we assume that it is safe to boot into it
+    // SAFETY: Writing to VTOR is always safe.
+    unsafe { (*cortex_m::peripheral::SCB::PTR).vtor.write(HAL::FW_START as u32); }
+
+    // SAFETY: Since CRC of firmware is valid, we assume that it is safe to boot into it.
     unsafe { cortex_m::asm::bootload(HAL::FW_START as *const u32); }
 }
