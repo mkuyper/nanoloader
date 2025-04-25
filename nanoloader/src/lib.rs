@@ -2,10 +2,10 @@
 
 pub mod lz4;
 
-pub enum PanicKind {
-    EXCEPTION,
-    BOOTLOADER,
-    FIRMWARE,
+#[derive(Debug)]
+pub enum AbortReason {
+    FwSizeInvalid,
+    FwCrcMismatch,
 }
 
 pub trait NanoHal {
@@ -13,33 +13,33 @@ pub trait NanoHal {
     const FW_END: usize;
     const FW_SIZE_OFF: usize;
 
-    fn panic(kind:PanicKind, reason:usize, address:usize) -> !;
+    fn abort(reason: AbortReason) -> !;
 }
 
-pub fn boot<HAL:NanoHal>() -> ! {
+pub fn boot<HAL: NanoHal>() -> ! {
     // SAFETY: It is assumed that the HAL const parameters are valid.
     let fwsize = unsafe {
         core::ptr::read_volatile((HAL::FW_START + HAL::FW_SIZE_OFF) as *const usize)
     };
 
     // Check fwsize
-    if fwsize > (HAL::FW_END - HAL::FW_START) {
-        panic!();
+    if fwsize == 0 || fwsize > (HAL::FW_END - HAL::FW_START) {
+        HAL::abort(AbortReason::FwSizeInvalid);
     }
 
     // Calculate CRC address
     let fwcrc_addr = match HAL::FW_START.checked_add(fwsize) {
         Some(addr) => addr,
-        None => panic!()
+        None => HAL::abort(AbortReason::FwSizeInvalid)
     };
 
     // Check that CRC is not past firmware area and verify alignment
     if fwcrc_addr > (HAL::FW_END - size_of::<u32>()) {
-        panic!();
+        HAL::abort(AbortReason::FwSizeInvalid);
     }
     let fwcrc_ptr = fwcrc_addr as *const u32;
     if !fwcrc_ptr.is_aligned() {
-        panic!();
+        HAL::abort(AbortReason::FwSizeInvalid);
     }
 
     // SAFETY: CRC pointer address and alignment have been checked.
@@ -54,7 +54,7 @@ pub fn boot<HAL:NanoHal>() -> ! {
 
     // Check firmware CRC
     if fwcrc_act != fwcrc_exp {
-        panic!();
+        HAL::abort(AbortReason::FwCrcMismatch);
     }
 
     // SAFETY: Writing to VTOR is always safe.
