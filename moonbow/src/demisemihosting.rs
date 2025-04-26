@@ -21,10 +21,7 @@ where
         SYS_OPEN => sys_open(emu),
         SYS_WRITE => sys_write(emu),
         ANGEL_REPORT_EXCEPTION => angel_report_exception(emu),
-        _ => Err(format!(
-            "Unsupported semihosting call {} (0x{:08x})",
-            r0, r0
-        )),
+        _ => Err(format!("Unsupported semihosting call {r0} (0x{r0:08x})")),
     }
     .and_then(|_| emu.advance_pc())
 }
@@ -92,8 +89,7 @@ where
             Ok(())
         }
         _ => Err(format!(
-            "Unsupported exception reported to angel: 0x{:08x}",
-            r1
+            "Unsupported exception reported to angel: 0x{r1:08x}"
         )),
     }
 }

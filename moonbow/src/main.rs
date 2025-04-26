@@ -71,11 +71,9 @@ impl<T> RegisterAccess for Unicorn<'_, T> {
 impl<T> MemoryAccess for Unicorn<'_, T> {
     fn read_into(&mut self, address: u32, destination: &mut [u8]) -> Result<(), String> {
         self.mem_read(address as u64, destination).or_else(|e| {
+            let n = destination.len();
             Err(format!(
-                "Could not {} bytes at 0x{:08x} ({:?})",
-                destination.len(),
-                address,
-                e
+                "Could not read {n} bytes at 0x{address:08x} ({e:?})"
             ))
         })
     }
@@ -104,7 +102,7 @@ impl<T> MemoryAccess for Unicorn<'_, T> {
         self.read_buf(address, length).and_then(|buf| {
             String::from_utf8(buf)
                 .and_then(|s| Ok(s))
-                .or_else(|e| Err(format!("Invalid UTF-8 string ({:?})", e)))
+                .or_else(|e| Err(format!("Invalid UTF-8 string ({e:?})")))
         })
     }
 
@@ -148,10 +146,9 @@ impl<T> Device<T> for Unicorn<'_, T> {
             let data = file.segment_data(&phdr).unwrap();
             self.mem_write(phdr.p_paddr, data)
                 .or_else(|e| {
-                    return Err(format!(
-                        "Could not write {} bytes at 0x{:08x} ({:?})",
-                        phdr.p_filesz, phdr.p_paddr, e
-                    ));
+                    let a = phdr.p_paddr;
+                    let n = phdr.p_filesz;
+                    return Err(format!("Could not write {n} bytes at 0x{a:08x} ({e:?})"));
                 })
                 .unwrap();
         }
@@ -188,7 +185,7 @@ fn main() {
     emu.add_insn_invalid_hook(|emu| {
         let pc = emu.read_pc();
 
-        println!("[PC:{:08x}] invalid instruction", pc);
+        println!("[PC:{pc:08x}] invalid instruction");
 
         false
     })
@@ -201,10 +198,7 @@ fn main() {
         |emu, access, address, length, _value| {
             let pc = emu.read_pc();
 
-            println!(
-                "[PC:{:08x}] {:?} to 0x{:08x} ({} bytes)",
-                pc, access, address, length
-            );
+            println!("[PC:{pc:08x}] {access:?} to 0x{address:08x} ({length} bytes)");
 
             false
         },
