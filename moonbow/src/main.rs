@@ -3,143 +3,52 @@ use byteorder::{ByteOrder,LittleEndian};
 use unicorn_engine::{Unicorn, RegisterARM, ArmCpuModel};
 use unicorn_engine::unicorn_const::{Arch, Mode, Permission, HookType};
 
-mod arm_sh_const {
-    pub const SYS_OPEN: u32 = 0x01;
-    pub const SYS_WRITE: u32 = 0x05;
-    pub const ANGEL_REPORT_EXCEPTION:u32 = 0x18;
+mod demisemihosting;
 
-    pub const ADP_STOPPED_RUNTIME_ERROR_UNKNOWN: u32 = 0x20023;
-    pub const ADP_STOPPED_APPLICATION_EXIT: u32 = 0x20026;
+// Memory access helpers
+trait MemoryAccess<T> {
+    fn read_mem<const N: usize>(&mut self, address: u32) -> Result<[u8;N], String>;
+    fn read_u16(&mut self, address: u32) -> Result<u16, String>;
+    fn read_u32(&mut self, address: u32) -> Result<u32, String>;
+
+    fn read_buf(&mut self, address: u32, length: u32) -> Result<Vec<u8>, String>;
+    fn read_str(&mut self, address: u32, length:u32) -> Result<String, String>;
+    fn read_str_lossy(&mut self, address: u32, length: u32) -> Result<String, String>;
 }
 
-struct CortexMDevice {}
-
-// A bare-minimum ARM Semihosting implementation
-trait DemiSemiHosting {
-    const FILENO_STDIO_MAGIC: u32 = 0x1234;
-
-    fn intr(&mut self) -> Result<(), String>;
-
-    fn sh_sys_open(&mut self) -> Result<(), String>;
-    fn sh_sys_write(&mut self) -> Result<(), String>;
-
-    fn sh_angel_report_exception(&mut self) -> Result<(), String>;
-}
-
-impl DemiSemiHosting for Unicorn<'_, CortexMDevice> {
-    fn intr(&mut self) -> Result<(), String> {
-        let r0 = self.reg_read(RegisterARM::R0).unwrap() as u32;
-
-        match r0 {
-            arm_sh_const::SYS_OPEN => self.sh_sys_open(),
-            arm_sh_const::SYS_WRITE => self.sh_sys_write(),
-            arm_sh_const::ANGEL_REPORT_EXCEPTION => self.sh_angel_report_exception(),
-            _ => Err(format!("Unsupported semihosting call {} (0x{:08x})", r0, r0))
-        }.and_then(|_| {
-            self.advance_pc()
+impl<T> MemoryAccess<T> for Unicorn<'_, T> {
+    fn read_mem<const N: usize>(&mut self, address: u32) -> Result<[u8;N], String> {
+        let mut buf = [0u8; N];
+        self.mem_read(address as u64, &mut buf).and_then(|_| {
+            Ok(buf)
+        }).or_else(|e| {
+            Err(format!("Could not {} bytes at 0x{:08x} ({:?})", N, address, e))
         })
     }
 
-    fn sh_sys_open(&mut self) -> Result<(), String> {
-        let r1 = self.reg_read(RegisterARM::R1).unwrap() as u32;
-
-        let fnptr = self.read_u32(r1 + 0)?;
-        //let mode = self.read_u32(r1 + 4)?;
-        let fnlen = self.read_u32(r1 + 8)?;
-
-        let fname = self.read_str(fnptr, fnlen)?;
-
-        let r0 = if fname == ":tt" { Self::FILENO_STDIO_MAGIC } else { 1u32.wrapping_neg() };
-
-        self.reg_write(RegisterARM::R0, r0 as u64).unwrap();
-
-        Ok(())
-    }
-
-    fn sh_sys_write(&mut self) -> Result<(), String> {
-        let r1 = self.reg_read(RegisterARM::R1).unwrap() as u32;
-
-        let fd = self.read_u32(r1 + 0)?;
-        let dptr = self.read_u32(r1 + 4)?;
-        let dlen = self.read_u32(r1 + 8)?;
-
-        let r0 = match fd {
-            Self::FILENO_STDIO_MAGIC => {
-                let s = self.read_str_lossy(dptr, dlen)?;
-                print!("{}", s);
-                0
-            },
-            _ => dlen
-        };
-
-        self.reg_write(RegisterARM::R0, r0 as u64).unwrap();
-
-        Ok(())
-    }
-
-    fn sh_angel_report_exception(&mut self) -> Result<(), String> {
-        let r1 = self.reg_read(RegisterARM::R1).unwrap() as u32;
-
-        match r1 {
-            arm_sh_const::ADP_STOPPED_APPLICATION_EXIT => {
-                self.emu_stop().unwrap();
-                Ok(())
-            },
-            arm_sh_const::ADP_STOPPED_RUNTIME_ERROR_UNKNOWN => {
-                println!("Application exited with error");
-                self.emu_stop().unwrap();
-                Ok(())
-            },
-            _ => Err(format!("Unsupported exception reported to angel: 0x{:08x}", r1))
-        }
-    }
-}
-
-
-trait Device {
-    fn load_elf(&mut self, elfdata:&[u8]) -> Result<(), String>;
-
-    fn read_u16(&mut self, addr:u32) -> Result<u16, String>;
-    fn read_u32(&mut self, addr:u32) -> Result<u32, String>;
-    fn read_str(&mut self, addr:u32, len:u32) -> Result<String, String>;
-    fn read_str_lossy(&mut self, addr:u32, len:u32) -> Result<String, String>;
-
-    fn advance_pc(&mut self) -> Result<(), String>;
-
-    fn run(&mut self);
-
-    fn intr_hook(&mut self, intno:u32);
-
-
-}
-
-impl Device for Unicorn<'_, CortexMDevice> {
-    fn read_u16(&mut self, addr:u32) -> Result<u16, String> {
-        let mut buf = [0u8; 2];
-
-        self.mem_read(addr as u64, &mut buf).and_then(|_| {
+    fn read_u16(&mut self, address: u32) -> Result<u16, String> {
+        self.read_mem::<2>(address).and_then(|buf| {
             Ok(LittleEndian::read_u16(&buf))
-        }).or_else(|e| {
-            Err(format!("Could not read 0x{:08x} ({:?})", addr, e))
         })
     }
 
-    fn read_u32(&mut self, addr:u32) -> Result<u32, String> {
-        let mut buf = [0u8; 4];
-
-        self.mem_read(addr as u64, &mut buf).and_then(|_| {
+    fn read_u32(&mut self, address: u32) -> Result<u32, String> {
+        self.read_mem::<4>(address).and_then(|buf| {
             Ok(LittleEndian::read_u32(&buf))
-        }).or_else(|e| {
-            Err(format!("Could not read 0x{:08x} ({:?})", addr, e))
         })
     }
 
-    fn read_str(&mut self, addr:u32, len:u32) -> Result<String, String> {
-        let mut buf: Vec<u8> = vec![0; len as usize];
+    fn read_buf(&mut self, address: u32, length: u32) -> Result<Vec<u8>, String> {
+        let mut buf: Vec<u8> = vec![0; length as usize];
+        self.mem_read(address as u64, &mut buf).and_then(|_| {
+            Ok(buf)
+        }).or_else(|e| {
+            Err(format!("Could not {} bytes at 0x{:08x} ({:?})", length, address, e))
+        })
+    }
 
-        self.mem_read(addr as u64, &mut buf).or_else(|e| {
-            Err(format!("Could not read 0x{:08x} ({:?})", addr, e))
-        }).and_then(|_| {
+    fn read_str(&mut self, address: u32, length:u32) -> Result<String, String> {
+        self.read_buf(address, length).and_then(|buf| {
             String::from_utf8(buf).and_then(|s| {
                 Ok(s)
             }).or_else(|e| {
@@ -148,16 +57,25 @@ impl Device for Unicorn<'_, CortexMDevice> {
         })
     }
 
-    fn read_str_lossy(&mut self, addr:u32, len:u32) -> Result<String, String> {
-        let mut buf: Vec<u8> = vec![0; len as usize];
-
-        self.mem_read(addr as u64, &mut buf).or_else(|e| {
-            Err(format!("Could not read 0x{:08x} ({:?})", addr, e))
-        }).and_then(|_| {
+    fn read_str_lossy(&mut self, address: u32, length: u32) -> Result<String, String> {
+        self.read_buf(address, length).and_then(|buf| {
             Ok(String::from_utf8_lossy(&buf).into())
         })
     }
+}
 
+
+trait Device<T> {
+    fn load_elf(&mut self, elfdata:&[u8]) -> Result<(), String>;
+
+    fn advance_pc(&mut self) -> Result<(), String>;
+
+    fn run(&mut self);
+
+    fn intr_hook(&mut self, intno:u32);
+}
+
+impl<T> Device<T> for Unicorn<'_, T> {
     fn advance_pc(&mut self) -> Result<(), String> {
         let pc = (self.reg_read(RegisterARM::PC).unwrap() as u32) & !1;
 
@@ -198,12 +116,14 @@ impl Device for Unicorn<'_, CortexMDevice> {
 
     fn intr_hook(&mut self, intno:u32) {
         match intno {
-            7 => { DemiSemiHosting::intr(self).unwrap(); },
+            7 => { demisemihosting::dispatch(self).unwrap(); },
             _ => { panic!("Unsupported interrupt {}", intno) }
         };
     }
 }
 
+
+struct CortexMDevice {} // still not sure if we'll ever need this...
 
 fn main() {
     let dev = CortexMDevice {};
