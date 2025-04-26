@@ -6,7 +6,9 @@ use unicorn_engine::unicorn_const::{Arch, Mode, Permission, HookType};
 mod demisemihosting;
 
 // Memory access helpers
-trait MemoryAccess<T> {
+trait MemoryAccess {
+    fn read_into(&mut self, address: u32, destination: &mut [u8]) -> Result<(), String>;
+
     fn read_mem<const N: usize>(&mut self, address: u32) -> Result<[u8;N], String>;
     fn read_u16(&mut self, address: u32) -> Result<u16, String>;
     fn read_u32(&mut self, address: u32) -> Result<u32, String>;
@@ -16,13 +18,17 @@ trait MemoryAccess<T> {
     fn read_str_lossy(&mut self, address: u32, length: u32) -> Result<String, String>;
 }
 
-impl<T> MemoryAccess<T> for Unicorn<'_, T> {
+impl<T> MemoryAccess for Unicorn<'_, T> {
+    fn read_into(&mut self, address: u32, destination: &mut [u8]) -> Result<(), String> {
+        self.mem_read(address as u64, destination).or_else(|e| {
+            Err(format!("Could not {} bytes at 0x{:08x} ({:?})", destination.len(), address, e))
+        })
+    }
+
     fn read_mem<const N: usize>(&mut self, address: u32) -> Result<[u8;N], String> {
         let mut buf = [0u8; N];
-        self.mem_read(address as u64, &mut buf).and_then(|_| {
+        self.read_into(address, &mut buf).and_then(|_| {
             Ok(buf)
-        }).or_else(|e| {
-            Err(format!("Could not {} bytes at 0x{:08x} ({:?})", N, address, e))
         })
     }
 
@@ -40,10 +46,8 @@ impl<T> MemoryAccess<T> for Unicorn<'_, T> {
 
     fn read_buf(&mut self, address: u32, length: u32) -> Result<Vec<u8>, String> {
         let mut buf: Vec<u8> = vec![0; length as usize];
-        self.mem_read(address as u64, &mut buf).and_then(|_| {
+        self.read_into(address, &mut buf).and_then(|_| {
             Ok(buf)
-        }).or_else(|e| {
-            Err(format!("Could not {} bytes at 0x{:08x} ({:?})", length, address, e))
         })
     }
 
