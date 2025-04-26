@@ -12,7 +12,7 @@ use crate::*;
 const FILENO_STDIO_MAGIC: u32 = 0x1234;
 
 pub fn dispatch<T>(emu: &mut Unicorn<'_, T>) -> Result<(), String> {
-    let r0 = emu.reg_read(RegisterARM::R0).unwrap() as u32;
+    let r0 = emu.read_reg(RegisterARM::R0);
 
     match r0 {
         SYS_OPEN => sys_open(emu),
@@ -25,7 +25,7 @@ pub fn dispatch<T>(emu: &mut Unicorn<'_, T>) -> Result<(), String> {
 }
 
 fn sys_open<T>(emu: &mut Unicorn<'_, T>) -> Result<(), String> {
-    let r1 = emu.reg_read(RegisterARM::R1).unwrap() as u32;
+    let r1 = emu.read_reg(RegisterARM::R1);
 
     let fnptr = emu.read_u32(r1 + 0)?;
     let fnlen = emu.read_u32(r1 + 8)?;
@@ -34,13 +34,13 @@ fn sys_open<T>(emu: &mut Unicorn<'_, T>) -> Result<(), String> {
 
     let r0 = if fname == ":tt" { FILENO_STDIO_MAGIC } else { 1u32.wrapping_neg() };
 
-    emu.reg_write(RegisterARM::R0, r0 as u64).unwrap();
+    emu.write_reg(RegisterARM::R0, r0);
 
     Ok(())
 }
 
 fn sys_write<T>(emu: &mut Unicorn<'_, T>) -> Result<(), String> {
-    let r1 = emu.reg_read(RegisterARM::R1).unwrap() as u32;
+    let r1 = emu.read_reg(RegisterARM::R1);
 
     let fd = emu.read_u32(r1 + 0)?;
     let dptr = emu.read_u32(r1 + 4)?;
@@ -55,13 +55,13 @@ fn sys_write<T>(emu: &mut Unicorn<'_, T>) -> Result<(), String> {
         _ => dlen
     };
 
-    emu.reg_write(RegisterARM::R0, r0 as u64).unwrap();
+    emu.write_reg(RegisterARM::R0, r0);
 
     Ok(())
 }
 
 fn angel_report_exception<T>(emu: &mut Unicorn<'_, T>) -> Result<(), String> {
-    let r1 = emu.reg_read(RegisterARM::R1).unwrap() as u32;
+    let r1 = emu.read_reg(RegisterARM::R1);
 
     match r1 {
         ADP_STOPPED_APPLICATION_EXIT => {

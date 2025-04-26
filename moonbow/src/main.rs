@@ -5,7 +5,16 @@ use unicorn_engine::unicorn_const::{Arch, Mode, Permission, HookType};
 
 mod demisemihosting;
 
-// Memory access helpers
+/// Register access helpers
+trait RegisterAccess {
+    fn read_reg(&mut self, register: RegisterARM) -> u32;
+    fn write_reg(&mut self, register: RegisterARM, value: u32);
+
+    fn read_pc(&mut self) -> u32;
+    fn write_pc(&mut self, pc: u32);
+}
+
+/// Memory access helpers
 trait MemoryAccess {
     fn read_into(&mut self, address: u32, destination: &mut [u8]) -> Result<(), String>;
 
@@ -16,6 +25,24 @@ trait MemoryAccess {
     fn read_buf(&mut self, address: u32, length: u32) -> Result<Vec<u8>, String>;
     fn read_str(&mut self, address: u32, length:u32) -> Result<String, String>;
     fn read_str_lossy(&mut self, address: u32, length: u32) -> Result<String, String>;
+}
+
+impl<T> RegisterAccess for Unicorn<'_, T> {
+    fn read_reg(&mut self, register: RegisterARM) -> u32 {
+        self.reg_read(register).unwrap() as u32
+    }
+
+    fn write_reg(&mut self, register: RegisterARM, value: u32) {
+        self.reg_write(register, value as u64).unwrap();
+    }
+
+    fn read_pc(&mut self) -> u32 {
+        self.read_reg(RegisterARM::PC) & !1
+    }
+
+    fn write_pc(&mut self, pc: u32) {
+        self.write_reg(RegisterARM::PC, pc | 1);
+    }
 }
 
 impl<T> MemoryAccess for Unicorn<'_, T> {
@@ -69,6 +96,7 @@ impl<T> MemoryAccess for Unicorn<'_, T> {
 }
 
 
+// Misc. stuff that needs to be organized
 trait Device<T> {
     fn load_elf(&mut self, elfdata:&[u8]) -> Result<(), String>;
 
@@ -81,13 +109,13 @@ trait Device<T> {
 
 impl<T> Device<T> for Unicorn<'_, T> {
     fn advance_pc(&mut self) -> Result<(), String> {
-        let pc = (self.reg_read(RegisterARM::PC).unwrap() as u32) & !1;
+        let pc = self.read_pc();
 
         // Check if current instruction is a 32-bit instruction
         let ins = self.read_u16(pc)?;
         let step = if (ins >> 11) > 0x1c { 4 } else { 2 };
 
-        self.reg_write(RegisterARM::PC, ((pc + step) | 1) as u64).unwrap();
+        self.write_pc(pc + step);
         Ok(())
     }
 
@@ -97,8 +125,8 @@ impl<T> Device<T> for Unicorn<'_, T> {
         let sp = self.read_u32(vtor + 0).unwrap();
         let pc = self.read_u32(vtor + 4).unwrap();
 
-        self.reg_write(RegisterARM::SP, sp as u64).unwrap();
-        self.reg_write(RegisterARM::PC, pc as u64).unwrap();
+        self.write_reg(RegisterARM::SP, sp);
+        self.write_reg(RegisterARM::PC, pc);
 
         self.emu_start(pc as u64, u64::MAX, 0, 0).expect("oops?");
     }
@@ -140,7 +168,7 @@ fn main() {
     }).unwrap();
 
     emu.add_insn_invalid_hook(|emu| {
-        let pc = emu.reg_read(RegisterARM::PC).unwrap();
+        let pc = emu.read_pc();
 
         println!("[PC:{:08x}] invalid instruction", pc);
 
@@ -148,7 +176,7 @@ fn main() {
     }).unwrap();
 
     emu.add_mem_hook(HookType::MEM_UNMAPPED, 1, 0, |emu, access, address, length, _value| {
-        let pc = emu.reg_read(RegisterARM::PC).unwrap();
+        let pc = emu.read_pc();
 
         println!("[PC:{:08x}] {:?} to 0x{:08x} ({} bytes)", pc, access, address, length);
 
