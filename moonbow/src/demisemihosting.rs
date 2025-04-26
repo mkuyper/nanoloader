@@ -32,7 +32,7 @@ fn sys_open<T>(emu: &mut Unicorn<'_, T>) -> Result<(), String> {
 
     let fname = emu.read_str(fnptr, fnlen)?;
 
-    let r0 = if fname == ":tt" { FILENO_STDIO_MAGIC } else { 1u32.wrapping_neg() };
+    let r0 = if fname == ":tt" { FILENO_STDIO_MAGIC } else { -1_i32 as u32 };
 
     emu.write_reg(RegisterARM::R0, r0);
 
