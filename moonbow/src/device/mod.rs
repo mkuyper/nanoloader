@@ -106,9 +106,7 @@ impl<T> MemoryAccess for Unicorn<'_, T> {
     fn read_into(&mut self, address: u32, destination: &mut [u8]) -> Result<(), String> {
         self.mem_read(address as u64, destination).or_else(|e| {
             let n = destination.len();
-            Err(format!(
-                "Could not read {n} bytes at 0x{address:08x} ({e:?})"
-            ))
+            Err(format!("Could not read {n} bytes at 0x{address:08x} ({e:?})"))
         })
     }
 }
@@ -120,19 +118,19 @@ impl<T> HookHandling for Unicorn<'_, T> {
                 7 => { demisemihosting::dispatch(emu).unwrap(); }
                 _ => { panic!("Unsupported interrupt {}", intno); }
             }
-        }).unwrap();
+        }).or_else(|e| Err(format!("Could not set INTR hook ({e:?})")))?;
 
         self.add_insn_invalid_hook(|emu| {
             let pc = emu.read_pc();
             println!("[PC:{pc:08x}] invalid instruction");
             false
-        }).unwrap();
+        }).or_else(|e| Err(format!("Could not set INSN_INVALID hook ({e:?})")))?;
 
         self.add_mem_hook(HookType::MEM_UNMAPPED, 1, 0, |emu, access, address, length, _value| {
             let pc = emu.read_pc();
             println!("[PC:{pc:08x}] {access:?} to 0x{address:08x} ({length} bytes)");
             false
-        }).unwrap();
+        }).or_else(|e| Err(format!("Could not set MEM_UNMAPPED hook ({e:?})")))?;
 
         Ok(())
     }
@@ -148,16 +146,13 @@ impl<T> Emulation for Unicorn<'_, T> {
         self.write_reg(RegisterARM::SP, sp);
         self.write_reg(RegisterARM::PC, pc);
 
-        self.emu_start(pc as u64, u64::MAX, 0, 0).or_else(|e| {
-            Err(format!("Error during emulation ({e:?})"))
-        })
+        self.emu_start(pc as u64, u64::MAX, 0, 0)
+            .or_else(|e| Err(format!("Error during emulation ({e:?})")))
     }
 
     fn load_elf(&mut self, elfdata: &[u8]) -> Result<(), String> {
         let file = elf::ElfBytes::<elf::endian::LittleEndian>::minimal_parse(elfdata)
-            .or_else(|e| {
-                return Err(format!("{e}"));
-            })?;
+            .or_else(|e| Err(format!("{e}")))?;
 
         for phdr in file
             .segments()
@@ -168,7 +163,7 @@ impl<T> Emulation for Unicorn<'_, T> {
                 self.mem_write(phdr.p_paddr, data).or_else(|e| {
                     let a = phdr.p_paddr;
                     let n = phdr.p_filesz;
-                    return Err(format!("Could not write {n} bytes at 0x{a:08x} ({e:?})"));
+                    Err(format!("Could not write {n} bytes at 0x{a:08x} ({e:?})"))
                 })?
         }
 
