@@ -250,5 +250,8 @@ pub fn create<'a>() -> Result<Unicorn<'a, DeviceData>, String> {
     emu.mem_map(0x0000_0000, 64 * 1024, Permission::ALL).unwrap();
     emu.mem_map(0x2000_0000, 16 * 1024, Permission::ALL).unwrap();
 
+    // Also, let's pretend we have a System Control Space
+    emu.mem_map(0xe000_e000, 4096, Permission::ALL).unwrap();
+
     Ok(emu)
 }
