@@ -7,7 +7,7 @@ const ANGEL_REPORT_EXCEPTION: u32 = 0x18;
 const ADP_STOPPED_RUNTIME_ERROR_UNKNOWN: u32 = 0x20023;
 const ADP_STOPPED_APPLICATION_EXIT: u32 = 0x20026;
 
-use crate::*;
+use crate::device::*;
 
 const FILENO_STDIO_MAGIC: u32 = 0x1234;
 
@@ -74,7 +74,7 @@ where
 
 fn angel_report_exception<T>(emu: &mut T) -> Result<(), String>
 where
-    T: RegisterAccess + MemoryAccess + EmulationControl,
+    T: RegisterAccess + EmulationControl,
 {
     let r1 = emu.read_reg(RegisterARM::R1);
 
