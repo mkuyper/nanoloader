@@ -13,7 +13,7 @@ const FILENO_STDIO_MAGIC: u32 = 0x1234;
 
 pub fn dispatch<T>(emu: &mut T) -> Result<(), String>
 where
-    T: EmulationControl + RegisterAccess + MemoryAccess,
+    T: EmulationControl + RegisterAccess + MemoryAccess + Debug,
 {
     let r0 = emu.read_reg(RegisterARM::R0);
 
@@ -50,7 +50,7 @@ where
 
 fn sys_write<T>(emu: &mut T) -> Result<(), String>
 where
-    T: RegisterAccess + MemoryAccess,
+    T: RegisterAccess + MemoryAccess + Debug,
 {
     let r1 = emu.read_reg(RegisterARM::R1);
 
@@ -60,8 +60,8 @@ where
 
     let r0 = match fd {
         FILENO_STDIO_MAGIC => {
-            let s = emu.read_str_lossy(dptr, dlen)?;
-            print!("{}", s);
+            let d = emu.read_buf(dptr, dlen)?;
+            emu.log(&d.as_slice());
             0
         }
         _ => dlen,
@@ -80,12 +80,11 @@ where
 
     match r1 {
         ADP_STOPPED_APPLICATION_EXIT => {
-            emu.stop_emu();
+            emu.stop_emu(Ok(()));
             Ok(())
         }
         ADP_STOPPED_RUNTIME_ERROR_UNKNOWN => {
-            println!("Application exited with error");
-            emu.stop_emu();
+            emu.stop_emu(Err(String::from("Application exited with error")));
             Ok(())
         }
         _ => Err(format!(

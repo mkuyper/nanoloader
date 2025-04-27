@@ -1,17 +1,19 @@
-use byteorder::{ByteOrder, LittleEndian};
+use byteorder::ByteOrder;
+
+use log;
 
 use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Permission};
 use unicorn_engine::{ArmCpuModel, RegisterARM, Unicorn};
 
 mod demisemihosting;
 
-/// Device emulation control
+/// Emulation control
 trait EmulationControl {
-    fn stop_emu(&mut self);
+    fn stop_emu(&mut self, result: Result<(), String>);
     fn advance_pc(&mut self) -> Result<(), String>;
 }
 
-/// Device register access
+/// Register access
 trait RegisterAccess {
     fn read_reg(&mut self, register: RegisterARM) -> u32;
     fn write_reg(&mut self, register: RegisterARM, value: u32);
@@ -25,7 +27,7 @@ trait RegisterAccess {
     }
 }
 
-/// Device memory access
+/// Memory access
 trait MemoryAccess {
     fn read_into(&mut self, address: u32, destination: &mut [u8]) -> Result<(), String>;
 
@@ -36,12 +38,12 @@ trait MemoryAccess {
 
     fn read_u16(&mut self, address: u32) -> Result<u16, String> {
         self.read_mem::<2>(address)
-            .and_then(|buf| Ok(LittleEndian::read_u16(&buf)))
+            .and_then(|buf| Ok(byteorder::LittleEndian::read_u16(&buf)))
     }
 
     fn read_u32(&mut self, address: u32) -> Result<u32, String> {
         self.read_mem::<4>(address)
-            .and_then(|buf| Ok(LittleEndian::read_u32(&buf)))
+            .and_then(|buf| Ok(byteorder::LittleEndian::read_u32(&buf)))
     }
 
     fn read_buf(&mut self, address: u32, length: u32) -> Result<Vec<u8>, String> {
@@ -57,6 +59,7 @@ trait MemoryAccess {
         })
     }
 
+    #[allow(dead_code)] // TODO - remove me
     fn read_str_lossy(&mut self, address: u32, length: u32) -> Result<String, String> {
         self.read_buf(address, length)
             .and_then(|buf| Ok(String::from_utf8_lossy(&buf).into()))
@@ -75,9 +78,19 @@ pub trait Emulation {
     fn load_elf(&mut self, elfdata: &[u8]) -> Result<(), String>;
 }
 
-impl<T> EmulationControl for Unicorn<'_, T> {
-    fn stop_emu(&mut self) {
+/// Debug
+trait Debug {
+    fn log(&mut self, data: &[u8]);
+}
+
+impl EmulationControl for Unicorn<'_, DeviceData> {
+    fn stop_emu(&mut self, result: Result<(), String>) {
+        match result {
+            Err(e) => { log::error!("{e}"); }
+            _ => ()
+        };
         self.emu_stop().unwrap();
+        log::debug!("Emulation stopped");
     }
 
     fn advance_pc(&mut self) -> Result<(), String> {
@@ -92,7 +105,7 @@ impl<T> EmulationControl for Unicorn<'_, T> {
     }
 }
 
-impl<T> RegisterAccess for Unicorn<'_, T> {
+impl RegisterAccess for Unicorn<'_, DeviceData> {
     fn read_reg(&mut self, register: RegisterARM) -> u32 {
         self.reg_read(register).unwrap() as u32
     }
@@ -102,7 +115,7 @@ impl<T> RegisterAccess for Unicorn<'_, T> {
     }
 }
 
-impl<T> MemoryAccess for Unicorn<'_, T> {
+impl MemoryAccess for Unicorn<'_, DeviceData> {
     fn read_into(&mut self, address: u32, destination: &mut [u8]) -> Result<(), String> {
         self.mem_read(address as u64, destination).or_else(|e| {
             let n = destination.len();
@@ -111,7 +124,7 @@ impl<T> MemoryAccess for Unicorn<'_, T> {
     }
 }
 
-impl<T> HookHandling for Unicorn<'_, T> {
+impl HookHandling for Unicorn<'_, DeviceData> {
     fn setup_hooks(&mut self) -> Result<(), String> {
         self.add_intr_hook(|emu, intno| {
             match intno {
@@ -136,7 +149,7 @@ impl<T> HookHandling for Unicorn<'_, T> {
     }
 }
 
-impl<T> Emulation for Unicorn<'_, T> {
+impl Emulation for Unicorn<'_, DeviceData> {
     fn run(&mut self) -> Result<(), String> {
         let vtor = 0x0000_0000; // TODO: where should the initial value come from?
 
@@ -151,28 +164,73 @@ impl<T> Emulation for Unicorn<'_, T> {
     }
 
     fn load_elf(&mut self, elfdata: &[u8]) -> Result<(), String> {
-        let file = elf::ElfBytes::<elf::endian::LittleEndian>::minimal_parse(elfdata)
+        let elffile = elf::ElfBytes::<elf::endian::LittleEndian>::minimal_parse(elfdata)
             .or_else(|e| Err(format!("{e}")))?;
 
-        for phdr in file
-            .segments()
-            .unwrap()
-            .iter()
-            .filter(|phdr| phdr.p_type == elf::abi::PT_LOAD && phdr.p_filesz > 0) {
-                let data = file.segment_data(&phdr).unwrap();
-                self.mem_write(phdr.p_paddr, data).or_else(|e| {
-                    let a = phdr.p_paddr;
-                    let n = phdr.p_filesz;
-                    Err(format!("Could not write {n} bytes at 0x{a:08x} ({e:?})"))
-                })?
-        }
+        match elffile.segments() {
+            Some(segments) => {
+                for phdr in segments.iter().filter(|phdr| {
+                    phdr.p_type == elf::abi::PT_LOAD && phdr.p_filesz > 0
+                }) {
+                    let data = elffile.segment_data(&phdr).unwrap();
 
+                    log::debug!("Loading segment at 0x{:08x} ({} bytes)",
+                        phdr.p_paddr, phdr.p_filesz);
+
+                    self.mem_write(phdr.p_paddr, data).or_else(|e| {
+                        let a = phdr.p_paddr;
+                        let n = phdr.p_filesz;
+                        Err(format!("Could not write {n} bytes at 0x{a:08x} ({e:?})"))
+                    })?
+                }
+                Ok(())
+            }
+            None => Err(String::from("No segments found in ELF file"))
+        }
+    }
+}
+
+impl Debug for Unicorn<'_, DeviceData> {
+    fn log(&mut self, data: &[u8]) {
+        let dev = self.get_data_mut();
+        use std::io::Write;
+        dev.log.write(data).expect("Log is not writable");
+        //log::info!("{}", String::from_utf8_lossy(&data));
+    }
+}
+
+struct LogWriter { }
+
+impl LogWriter {
+    pub fn new() -> LogWriter {
+        LogWriter {}
+    }
+}
+
+impl std::io::Write for LogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let s = String::from_utf8_lossy(&buf);
+        let t = s.trim_end();
+        if t.len() > 0 {
+            log::info!("{}", t);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-pub fn create<'a>() -> Result<Unicorn<'a, ()>, String> {
-    let mut emu = Unicorn::new(Arch::ARM, Mode::LITTLE_ENDIAN).unwrap();
+pub struct DeviceData {
+    log: std::io::LineWriter<LogWriter>,
+}
+
+pub fn create<'a>() -> Result<Unicorn<'a, DeviceData>, String> {
+    let dev = DeviceData {
+        log: std::io::LineWriter::new(LogWriter::new()),
+    };
+    let mut emu = Unicorn::new_with_data(Arch::ARM, Mode::LITTLE_ENDIAN, dev).unwrap();
 
     // TODO - make configurable
     emu.ctl_set_cpu_model(ArmCpuModel::UC_CPU_ARM_CORTEX_M0.into()).unwrap();
