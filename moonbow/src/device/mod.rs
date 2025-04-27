@@ -16,21 +16,51 @@ trait RegisterAccess {
     fn read_reg(&mut self, register: RegisterARM) -> u32;
     fn write_reg(&mut self, register: RegisterARM, value: u32);
 
-    fn read_pc(&mut self) -> u32;
-    fn write_pc(&mut self, pc: u32);
+    fn read_pc(&mut self) -> u32 {
+        self.read_reg(RegisterARM::PC) & !1
+    }
+
+    fn write_pc(&mut self, pc: u32) {
+        self.write_reg(RegisterARM::PC, pc | 1);
+    }
 }
 
 /// Device memory access
 trait MemoryAccess {
     fn read_into(&mut self, address: u32, destination: &mut [u8]) -> Result<(), String>;
 
-    fn read_mem<const N: usize>(&mut self, address: u32) -> Result<[u8; N], String>;
-    fn read_u16(&mut self, address: u32) -> Result<u16, String>;
-    fn read_u32(&mut self, address: u32) -> Result<u32, String>;
+    fn read_mem<const N: usize>(&mut self, address: u32) -> Result<[u8; N], String> {
+        let mut buf = [0u8; N];
+        self.read_into(address, &mut buf).and_then(|_| Ok(buf))
+    }
 
-    fn read_buf(&mut self, address: u32, length: u32) -> Result<Vec<u8>, String>;
-    fn read_str(&mut self, address: u32, length: u32) -> Result<String, String>;
-    fn read_str_lossy(&mut self, address: u32, length: u32) -> Result<String, String>;
+    fn read_u16(&mut self, address: u32) -> Result<u16, String> {
+        self.read_mem::<2>(address)
+            .and_then(|buf| Ok(LittleEndian::read_u16(&buf)))
+    }
+
+    fn read_u32(&mut self, address: u32) -> Result<u32, String> {
+        self.read_mem::<4>(address)
+            .and_then(|buf| Ok(LittleEndian::read_u32(&buf)))
+    }
+
+    fn read_buf(&mut self, address: u32, length: u32) -> Result<Vec<u8>, String> {
+        let mut buf: Vec<u8> = vec![0; length as usize];
+        self.read_into(address, &mut buf).and_then(|_| Ok(buf))
+    }
+
+    fn read_str(&mut self, address: u32, length: u32) -> Result<String, String> {
+        self.read_buf(address, length).and_then(|buf| {
+            String::from_utf8(buf)
+                .and_then(|s| Ok(s))
+                .or_else(|e| Err(format!("Invalid UTF-8 string ({e:?})")))
+        })
+    }
+
+    fn read_str_lossy(&mut self, address: u32, length: u32) -> Result<String, String> {
+        self.read_buf(address, length)
+            .and_then(|buf| Ok(String::from_utf8_lossy(&buf).into()))
+    }
 }
 
 /// Hook handling
@@ -70,14 +100,6 @@ impl<T> RegisterAccess for Unicorn<'_, T> {
     fn write_reg(&mut self, register: RegisterARM, value: u32) {
         self.reg_write(register, value as u64).unwrap();
     }
-
-    fn read_pc(&mut self) -> u32 {
-        self.read_reg(RegisterARM::PC) & !1
-    }
-
-    fn write_pc(&mut self, pc: u32) {
-        self.write_reg(RegisterARM::PC, pc | 1);
-    }
 }
 
 impl<T> MemoryAccess for Unicorn<'_, T> {
@@ -88,39 +110,6 @@ impl<T> MemoryAccess for Unicorn<'_, T> {
                 "Could not read {n} bytes at 0x{address:08x} ({e:?})"
             ))
         })
-    }
-
-    fn read_mem<const N: usize>(&mut self, address: u32) -> Result<[u8; N], String> {
-        let mut buf = [0u8; N];
-        self.read_into(address, &mut buf).and_then(|_| Ok(buf))
-    }
-
-    fn read_u16(&mut self, address: u32) -> Result<u16, String> {
-        self.read_mem::<2>(address)
-            .and_then(|buf| Ok(LittleEndian::read_u16(&buf)))
-    }
-
-    fn read_u32(&mut self, address: u32) -> Result<u32, String> {
-        self.read_mem::<4>(address)
-            .and_then(|buf| Ok(LittleEndian::read_u32(&buf)))
-    }
-
-    fn read_buf(&mut self, address: u32, length: u32) -> Result<Vec<u8>, String> {
-        let mut buf: Vec<u8> = vec![0; length as usize];
-        self.read_into(address, &mut buf).and_then(|_| Ok(buf))
-    }
-
-    fn read_str(&mut self, address: u32, length: u32) -> Result<String, String> {
-        self.read_buf(address, length).and_then(|buf| {
-            String::from_utf8(buf)
-                .and_then(|s| Ok(s))
-                .or_else(|e| Err(format!("Invalid UTF-8 string ({e:?})")))
-        })
-    }
-
-    fn read_str_lossy(&mut self, address: u32, length: u32) -> Result<String, String> {
-        self.read_buf(address, length)
-            .and_then(|buf| Ok(String::from_utf8_lossy(&buf).into()))
     }
 }
 
