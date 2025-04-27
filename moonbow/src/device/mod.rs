@@ -6,6 +6,7 @@ use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Permission};
 use unicorn_engine::{ArmCpuModel, RegisterARM, Unicorn};
 
 mod demisemihosting;
+mod intelhex;
 
 /// Emulation control
 trait EmulationControl {
@@ -54,7 +55,6 @@ trait MemoryAccess {
     fn read_str(&mut self, address: u32, length: u32) -> Result<String, String> {
         self.read_buf(address, length).and_then(|buf| {
             String::from_utf8(buf)
-                .and_then(|s| Ok(s))
                 .or_else(|e| Err(format!("Invalid UTF-8 string ({e:?})")))
         })
     }
@@ -75,7 +75,9 @@ trait HookHandling {
 pub trait Emulation {
     fn run(&mut self) -> Result<(), String>;
 
+    fn load_segment(&mut self, address: u32, data: &[u8]) -> Result<(), String>;
     fn load_elf(&mut self, elfdata: &[u8]) -> Result<(), String>;
+    fn load_ihex(&mut self, ihexdata: &[u8]) -> Result<(), String>;
 }
 
 /// Debug
@@ -135,13 +137,13 @@ impl HookHandling for Unicorn<'_, DeviceData> {
 
         self.add_insn_invalid_hook(|emu| {
             let pc = emu.read_pc();
-            println!("[PC:{pc:08x}] invalid instruction");
+            log::error!("[PC:{pc:08x}] invalid instruction");
             false
         }).or_else(|e| Err(format!("Could not set INSN_INVALID hook ({e:?})")))?;
 
         self.add_mem_hook(HookType::MEM_UNMAPPED, 1, 0, |emu, access, address, length, _value| {
             let pc = emu.read_pc();
-            println!("[PC:{pc:08x}] {access:?} to 0x{address:08x} ({length} bytes)");
+            log::error!("[PC:{pc:08x}] {access:?} to 0x{address:08x} ({length} bytes)");
             false
         }).or_else(|e| Err(format!("Could not set MEM_UNMAPPED hook ({e:?})")))?;
 
@@ -163,6 +165,14 @@ impl Emulation for Unicorn<'_, DeviceData> {
             .or_else(|e| Err(format!("Error during emulation ({e:?})")))
     }
 
+    fn load_segment(&mut self, address: u32, data: &[u8]) -> Result<(), String> {
+        log::debug!("Loading segment at 0x{:08x} ({} bytes)", address, data.len());
+
+        self.mem_write(address as u64, data).or_else(|e| {
+            Err(format!("Could not write {} bytes at 0x{:08x} ({e:?})", data.len(), address))
+        })
+    }
+
     fn load_elf(&mut self, elfdata: &[u8]) -> Result<(), String> {
         let elffile = elf::ElfBytes::<elf::endian::LittleEndian>::minimal_parse(elfdata)
             .or_else(|e| Err(format!("{e}")))?;
@@ -174,19 +184,19 @@ impl Emulation for Unicorn<'_, DeviceData> {
                 }) {
                     let data = elffile.segment_data(&phdr).unwrap();
 
-                    log::debug!("Loading segment at 0x{:08x} ({} bytes)",
-                        phdr.p_paddr, phdr.p_filesz);
-
-                    self.mem_write(phdr.p_paddr, data).or_else(|e| {
-                        let a = phdr.p_paddr;
-                        let n = phdr.p_filesz;
-                        Err(format!("Could not write {n} bytes at 0x{a:08x} ({e:?})"))
-                    })?
+                    self.load_segment(phdr.p_paddr as u32, data)?;
                 }
                 Ok(())
             }
             None => Err(String::from("No segments found in ELF file"))
         }
+    }
+
+    fn load_ihex(&mut self, ihexdata: &[u8]) -> Result<(), String> {
+        for segment in intelhex::segments(ihexdata)? {
+            self.load_segment(segment.address as u32, segment.data.as_slice())?;
+        }
+        Ok(())
     }
 }
 
@@ -195,7 +205,6 @@ impl Debug for Unicorn<'_, DeviceData> {
         let dev = self.get_data_mut();
         use std::io::Write;
         dev.log.write(data).expect("Log is not writable");
-        //log::info!("{}", String::from_utf8_lossy(&data));
     }
 }
 
