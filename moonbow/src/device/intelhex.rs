@@ -53,9 +53,7 @@ pub fn segments(hexdata: &[u8]) -> Result<Vec<Segment>, String> {
             ihex::Record::ExtendedLinearAddress(ela) => {
                 address_base = (ela as usize) << 16;
             }
-            _ =>  {
-                println!("{rec:?}");
-            }
+            _ =>  ()
         }
     }
     Err(String::from("Unexpected end of file"))

@@ -7,6 +7,7 @@ use unicorn_engine::{ArmCpuModel, RegisterARM, Unicorn};
 
 mod demisemihosting;
 mod intelhex;
+mod peripherals;
 
 /// Emulation control
 trait EmulationControl {
@@ -147,6 +148,29 @@ impl HookHandling for Unicorn<'_, DeviceData> {
             false
         }).or_else(|e| Err(format!("Could not set MEM_UNMAPPED hook ({e:?})")))?;
 
+        // XXX -------------------
+        self.mmio_map(0xe000_e000, 4096,
+            Some(|emu:&mut Unicorn<'_, DeviceData>, addr, size| {
+                match emu.mmio_read(addr as u32, size as u32) {
+                    Ok(x) => x as u64,
+                    Err(e) => {
+                        log::error!("mmio read failed: {e}");
+                        // TODO - trap? exception?
+                        0_u64
+                    }
+                }
+            }),
+            Some(|emu:&mut Unicorn<'_, DeviceData>, addr, size, value| {
+                match emu.mmio_write(addr as u32, size as u32, value as u32) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::error!("mmio write failed: {e}");
+                        // TODO - trap? exception?
+                    }
+                }
+            })).or_else(|e| Err(format!("Could not set MMIO map ({e:?})")))?;
+        // XXX -------------------
+
         Ok(())
     }
 }
@@ -231,13 +255,37 @@ impl std::io::Write for LogWriter {
     }
 }
 
+// - XXX ------------------------------------------------------------------------------------------
+trait MmioTest {
+    fn mmio_read(&self, addr: u32, size: u32) -> Result<u32, String>;
+    fn mmio_write(&mut self, addr: u32, size: u32, value: u32) -> Result<(), String>;
+}
+impl MmioTest for Unicorn<'_, DeviceData> {
+    fn mmio_read(&self, addr: u32, size: u32) -> Result<u32, String> {
+        let dev = self.get_data();
+        dev.scs.mmio_read(addr, size)
+    }
+    fn mmio_write(&mut self, addr: u32, size: u32, value: u32) -> Result<(), String> {
+        let dev = self.get_data_mut();
+        dev.scs.mmio_write(addr, size, value)
+    }
+}
+// ------------------------------------------------------------------------------------------------
+
 pub struct DeviceData {
     log: std::io::LineWriter<LogWriter>,
+    scs: peripherals::MemoryMappedRegion, // XXX
 }
 
 pub fn create<'a>() -> Result<Unicorn<'a, DeviceData>, String> {
+
+    // TODO - this needs refinement
+    let mut scs = peripherals::MemoryMappedRegion::new(0xe000ed08, "SCS");
+    scs.add(0x00000d08, "VTOR");
+
     let dev = DeviceData {
         log: std::io::LineWriter::new(LogWriter::new()),
+        scs: scs,
     };
     let mut emu = Unicorn::new_with_data(Arch::ARM, Mode::LITTLE_ENDIAN, dev).unwrap();
 
@@ -249,9 +297,6 @@ pub fn create<'a>() -> Result<Unicorn<'a, DeviceData>, String> {
     // For now, let's map some "Flash" and some RAM -- TODO: remove me
     emu.mem_map(0x0000_0000, 64 * 1024, Permission::ALL).unwrap();
     emu.mem_map(0x2000_0000, 16 * 1024, Permission::ALL).unwrap();
-
-    // Also, let's pretend we have a System Control Space
-    emu.mem_map(0xe000_e000, 4096, Permission::ALL).unwrap();
 
     Ok(emu)
 }

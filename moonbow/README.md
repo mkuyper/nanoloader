@@ -5,6 +5,7 @@
 <img width="250" src="src/.doc/moonbow.png">
 </p>
 
-Moonbow is an embedded device emulation framework for ARM Cortex-M devices
-written in Rust and based on the 
-[Unicorn Engine](https://github.com/unicorn-engine/unicorn).
+Moonbow is an embedded device emulation suite for ARM Cortex-M devices intended
+to enable test-driven development. Originally started in Python, it is now
+being re-written in Rust. The emulation core is built on the excellent [Unicorn
+Engine](https://github.com/unicorn-engine/unicorn).
