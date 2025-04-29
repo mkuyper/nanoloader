@@ -14,11 +14,12 @@ trait RegisterBlock {
     fn get_mut(&mut self, addr:u32) -> Option<&mut Register>;
 
     fn base(&self) -> Option<u32>;
+    fn name(&self) -> &'static str;
 
-    fn read(&self, offset: u32, size: u32) -> Result<u32, String> {
+    fn read(&self, base: u32, offset: u32, size: u32) -> Result<u32, String> {
         let Some(reg) = self.get(offset) else {
-            return Err(format!("No register mapped at {}+0x{:x}",
-                    "(unknown)", offset));
+            return Err(format!("No register mapped at 0x{:08x} ({}+0x{:x})",
+                    base + offset, self.name(), offset));
         };
 
         let value = reg.read();
@@ -32,10 +33,10 @@ trait RegisterBlock {
         }
     }
 
-    fn write(&mut self, offset: u32, size: u32, value: u32) -> Result<(), String> {
+    fn write(&mut self, base: u32, offset: u32, size: u32, value: u32) -> Result<(), String> {
         let Some(reg) = self.get_mut(offset) else {
-            return Err(format!("No register mapped at {}+0x{:x}",
-                    "(unknown)", offset));
+            return Err(format!("No register mapped at 0x{:08x} ({}+0x{:x})",
+                    base + offset, self.name(), offset));
         };
 
         let base = offset & !3;
@@ -65,7 +66,7 @@ mod cortex_m0 {
 
     #[derive(RegBlock)]
     #[base(0xe000e000)]
-    pub struct SystemControlSpace {
+    pub struct SCS {
 
         #[offset(0xd08)]
         vtor: Register,
@@ -82,7 +83,7 @@ impl TestDevice {
             blocks: HashMap::<u32, Box<dyn RegisterBlock>>::new(),
         };
 
-        me.add_block(Box::new(cortex_m0::SystemControlSpace::new()));
+        me.add_block(Box::new(cortex_m0::SCS::new()));
 
         me
     }
@@ -97,11 +98,11 @@ impl TestDevice {
     }
 
     pub fn mmio_read(&self, base: u32, offset: u32, size: u32) -> Result<u32, String> {
-        self.get_block(base)?.read(offset, size)
+        self.get_block(base)?.read(base, offset, size)
     }
 
     pub fn mmio_write(&mut self, base: u32, offset: u32, size: u32, value: u32) -> Result<(), String> {
-        self.get_block_mut(base)?.write(offset, size, value)
+        self.get_block_mut(base)?.write(base, offset, size, value)
     }
 
     fn get_block_mut(&mut self, base:u32) -> Result<&mut Box<dyn RegisterBlock>, String> {

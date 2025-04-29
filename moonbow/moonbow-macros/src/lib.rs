@@ -18,6 +18,7 @@ struct RegisterInfo {
 
 fn impl_register_block(input: &DeriveInput) -> TokenStream {
     let name = &input.ident;
+    let namestr = name.to_string();
 
     let base = if let Some(baseattr) = input.attrs.iter().find(|a| a.path().is_ident("base")) {
         let lit: syn::LitInt = baseattr.parse_args().unwrap();
@@ -114,6 +115,10 @@ fn impl_register_block(input: &DeriveInput) -> TokenStream {
 
             fn base(&self) -> Option<u32> {
                 #base 
+            }
+
+            fn name(&self) -> &'static str {
+                #namestr
             }
         }
 
