@@ -149,9 +149,10 @@ impl HookHandling for Unicorn<'_, DeviceData> {
         }).or_else(|e| Err(format!("Could not set MEM_UNMAPPED hook ({e:?})")))?;
 
         // XXX -------------------
-        self.mmio_map(0xe000_e000, 4096,
-            Some(|emu:&mut Unicorn<'_, DeviceData>, addr, size| {
-                match emu.mmio_read(addr as u32, size as u32) {
+        let base: u32 = 0xe000_e000;
+        self.mmio_map(base as u64, 4096,
+            Some(move |emu:&mut Unicorn<'_, DeviceData>, addr, size| {
+                match emu.mmio_read(base, addr as u32, size as u32) {
                     Ok(x) => x as u64,
                     Err(e) => {
                         log::error!("mmio read failed: {e}");
@@ -160,8 +161,8 @@ impl HookHandling for Unicorn<'_, DeviceData> {
                     }
                 }
             }),
-            Some(|emu:&mut Unicorn<'_, DeviceData>, addr, size, value| {
-                match emu.mmio_write(addr as u32, size as u32, value as u32) {
+            Some(move |emu:&mut Unicorn<'_, DeviceData>, addr, size, value| {
+                match emu.mmio_write(base, addr as u32, size as u32, value as u32) {
                     Ok(_) => {}
                     Err(e) => {
                         log::error!("mmio write failed: {e}");
@@ -257,35 +258,38 @@ impl std::io::Write for LogWriter {
 
 // - XXX ------------------------------------------------------------------------------------------
 trait MmioTest {
-    fn mmio_read(&self, addr: u32, size: u32) -> Result<u32, String>;
-    fn mmio_write(&mut self, addr: u32, size: u32, value: u32) -> Result<(), String>;
+    fn mmio_read(&self, base:u32, addr: u32, size: u32) -> Result<u32, String>;
+    fn mmio_write(&mut self, base: u32, addr: u32, size: u32, value: u32) -> Result<(), String>;
 }
 impl MmioTest for Unicorn<'_, DeviceData> {
-    fn mmio_read(&self, addr: u32, size: u32) -> Result<u32, String> {
+    fn mmio_read(&self, base:u32, addr: u32, size: u32) -> Result<u32, String> {
         let dev = self.get_data();
-        dev.scs.mmio_read(addr, size)
+        dev.mmio.mmio_read(base, addr, size)
     }
-    fn mmio_write(&mut self, addr: u32, size: u32, value: u32) -> Result<(), String> {
+    fn mmio_write(&mut self, base:u32, addr: u32, size: u32, value: u32) -> Result<(), String> {
         let dev = self.get_data_mut();
-        dev.scs.mmio_write(addr, size, value)
+        dev.mmio.mmio_write(base, addr, size, value)
     }
 }
 // ------------------------------------------------------------------------------------------------
 
 pub struct DeviceData {
     log: std::io::LineWriter<LogWriter>,
-    scs: peripherals::MemoryMappedRegion, // XXX
+    mmio: peripherals::MmioDispatcher, // XXX
 }
 
 pub fn create<'a>() -> Result<Unicorn<'a, DeviceData>, String> {
 
     // TODO - this needs refinement
-    let mut scs = peripherals::MemoryMappedRegion::new(0xe000ed08, "SCS");
+    let mut scs = peripherals::MemoryMappedRegion::new(0xe000e000, "SCS");
     scs.add(0x00000d08, "VTOR");
+
+    let mut mmio = peripherals::MmioDispatcher::new();
+    mmio.add(scs);
 
     let dev = DeviceData {
         log: std::io::LineWriter::new(LogWriter::new()),
-        scs: scs,
+        mmio: mmio,
     };
     let mut emu = Unicorn::new_with_data(Arch::ARM, Mode::LITTLE_ENDIAN, dev).unwrap();
 
