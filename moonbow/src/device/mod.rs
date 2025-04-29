@@ -263,33 +263,26 @@ trait MmioTest {
 }
 impl MmioTest for Unicorn<'_, DeviceData> {
     fn mmio_read(&self, base:u32, addr: u32, size: u32) -> Result<u32, String> {
-        let dev = self.get_data();
-        dev.mmio.mmio_read(base, addr, size)
+        let dd = self.get_data();
+        dd.dev.mmio_read(base, addr, size)
     }
     fn mmio_write(&mut self, base:u32, addr: u32, size: u32, value: u32) -> Result<(), String> {
-        let dev = self.get_data_mut();
-        dev.mmio.mmio_write(base, addr, size, value)
+        let dd = self.get_data_mut();
+        dd.dev.mmio_write(base, addr, size, value)
     }
 }
 // ------------------------------------------------------------------------------------------------
 
 pub struct DeviceData {
     log: std::io::LineWriter<LogWriter>,
-    mmio: peripherals::MmioDispatcher, // XXX
+    dev: peripherals::TestDevice, // XXX
 }
 
 pub fn create<'a>() -> Result<Unicorn<'a, DeviceData>, String> {
 
-    // TODO - this needs refinement
-    let mut scs = peripherals::MemoryMappedRegion::new(0xe000e000, "SCS");
-    scs.add(0x00000d08, "VTOR");
-
-    let mut mmio = peripherals::MmioDispatcher::new();
-    mmio.add(scs);
-
     let dev = DeviceData {
         log: std::io::LineWriter::new(LogWriter::new()),
-        mmio: mmio,
+        dev: peripherals::TestDevice::new(), // XXX
     };
     let mut emu = Unicorn::new_with_data(Arch::ARM, Mode::LITTLE_ENDIAN, dev).unwrap();
 
