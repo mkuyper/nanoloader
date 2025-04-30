@@ -3,8 +3,9 @@ use byteorder::ByteOrder;
 use log;
 
 use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Permission};
-use unicorn_engine::{ArmCpuModel, RegisterARM, Unicorn};
+use unicorn_engine::{RegisterARM, Unicorn};
 
+mod cortex_m0;
 mod demisemihosting;
 mod intelhex;
 mod peripherals;
@@ -60,7 +61,7 @@ trait MemoryAccess {
         })
     }
 
-    #[allow(dead_code)] // TODO - remove me
+    #[allow(dead_code)] // TODO - remove me if not needed
     fn read_str_lossy(&mut self, address: u32, length: u32) -> Result<String, String> {
         self.read_buf(address, length)
             .and_then(|buf| Ok(String::from_utf8_lossy(&buf).into()))
@@ -72,8 +73,15 @@ trait HookHandling {
     fn setup_hooks(&mut self) -> Result<(), String>;
 }
 
+/// Memory-mapped I/O
+trait Mmio {
+    fn setup_mmio(&mut self) -> Result<(), String>;
+}
+
 /// Emulation
 pub trait Emulation {
+    fn init(&mut self) -> Result<(), String>;
+
     fn run(&mut self) -> Result<(), String>;
 
     fn load_segment(&mut self, address: u32, data: &[u8]) -> Result<(), String>;
@@ -86,7 +94,7 @@ trait Debug {
     fn log(&mut self, data: &[u8]);
 }
 
-impl EmulationControl for Unicorn<'_, DeviceData> {
+impl EmulationControl for Unicorn<'_, Context> {
     fn stop_emu(&mut self, result: Result<(), String>) {
         match result {
             Err(e) => { log::error!("{e}"); }
@@ -108,7 +116,7 @@ impl EmulationControl for Unicorn<'_, DeviceData> {
     }
 }
 
-impl RegisterAccess for Unicorn<'_, DeviceData> {
+impl RegisterAccess for Unicorn<'_, Context> {
     fn read_reg(&mut self, register: RegisterARM) -> u32 {
         self.reg_read(register).unwrap() as u32
     }
@@ -118,7 +126,7 @@ impl RegisterAccess for Unicorn<'_, DeviceData> {
     }
 }
 
-impl MemoryAccess for Unicorn<'_, DeviceData> {
+impl MemoryAccess for Unicorn<'_, Context> {
     fn read_into(&mut self, address: u32, destination: &mut [u8]) -> Result<(), String> {
         self.mem_read(address as u64, destination).or_else(|e| {
             let n = destination.len();
@@ -127,7 +135,7 @@ impl MemoryAccess for Unicorn<'_, DeviceData> {
     }
 }
 
-impl HookHandling for Unicorn<'_, DeviceData> {
+impl HookHandling for Unicorn<'_, Context> {
     fn setup_hooks(&mut self) -> Result<(), String> {
         self.add_intr_hook(|emu, intno| {
             match intno {
@@ -148,35 +156,54 @@ impl HookHandling for Unicorn<'_, DeviceData> {
             false
         }).or_else(|e| Err(format!("Could not set MEM_UNMAPPED hook ({e:?})")))?;
 
-        // XXX -------------------
-        let base: u32 = 0xe000_e000;
-        self.mmio_map(base as u64, 4096,
-            Some(move |emu:&mut Unicorn<'_, DeviceData>, addr, size| {
-                match emu.mmio_read(base, addr as u32, size as u32) {
-                    Ok(x) => x as u64,
-                    Err(e) => {
-                        log::error!("mmio read failed: {e}");
-                        // TODO - trap? exception?
-                        0_u64
-                    }
-                }
-            }),
-            Some(move |emu:&mut Unicorn<'_, DeviceData>, addr, size, value| {
-                match emu.mmio_write(base, addr as u32, size as u32, value as u32) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        log::error!("mmio write failed: {e}");
-                        // TODO - trap? exception?
-                    }
-                }
-            })).or_else(|e| Err(format!("Could not set MMIO map ({e:?})")))?;
-        // XXX -------------------
-
         Ok(())
     }
 }
 
-impl Emulation for Unicorn<'_, DeviceData> {
+impl Mmio for Unicorn<'_, Context> {
+    fn setup_mmio(&mut self) -> Result<(), String> {
+        let ctx = self.get_data();
+
+        for (base, size) in ctx.dev.mmio_blocks() {
+            log::debug!("Mapping MMIO segment at 0x{:08x} ({} bytes)", base, size);
+
+            self.mmio_map(base as u64, size as usize,
+                Some(move |emu:&mut Unicorn<'_, Context>, addr, size| {
+                    let ctx = emu.get_data();
+                    match ctx.dev.mmio_read(base, addr as u32, size as u32) {
+                        Ok(x) => x as u64,
+                        Err(e) => {
+                            log::error!("mmio read failed: {e}");
+                            // TODO - trap? exception?
+                            0_u64
+                        }
+                    }
+                }),
+                Some(move |emu:&mut Unicorn<'_, Context>, addr, size, value| {
+                    let ctx = emu.get_data_mut();
+                    match ctx.dev.mmio_write(base, addr as u32, size as u32, value as u32) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            log::error!("mmio write failed: {e}");
+                            // TODO - trap? exception?
+                        }
+                    }
+                }))
+            .or_else(|e| Err(format!("Could not map MMIO segment ({e:?})")))?;
+        }
+        Ok(())
+    }
+}
+
+impl Emulation for Unicorn<'_, Context> {
+    fn init(&mut self) -> Result<(), String> {
+        let ctx = self.get_data();
+
+        self.ctl_set_cpu_model(ctx.dev.cpu_model.into()).unwrap();
+
+        Ok(())
+    }
+
     fn run(&mut self) -> Result<(), String> {
         let vtor = 0x0000_0000; // TODO: where should the initial value come from?
 
@@ -225,11 +252,11 @@ impl Emulation for Unicorn<'_, DeviceData> {
     }
 }
 
-impl Debug for Unicorn<'_, DeviceData> {
+impl Debug for Unicorn<'_, Context> {
     fn log(&mut self, data: &[u8]) {
-        let dev = self.get_data_mut();
+        let ctx = self.get_data_mut();
         use std::io::Write;
-        dev.log.write(data).expect("Log is not writable");
+        ctx.log.write(data).expect("Log is not writable");
     }
 }
 
@@ -256,44 +283,148 @@ impl std::io::Write for LogWriter {
     }
 }
 
-// - XXX ------------------------------------------------------------------------------------------
-trait MmioTest {
-    fn mmio_read(&self, base:u32, addr: u32, size: u32) -> Result<u32, String>;
-    fn mmio_write(&mut self, base: u32, addr: u32, size: u32, value: u32) -> Result<(), String>;
-}
-impl MmioTest for Unicorn<'_, DeviceData> {
-    fn mmio_read(&self, base:u32, addr: u32, size: u32) -> Result<u32, String> {
-        let dd = self.get_data();
-        dd.dev.mmio_read(base, addr, size)
-    }
-    fn mmio_write(&mut self, base:u32, addr: u32, size: u32, value: u32) -> Result<(), String> {
-        let dd = self.get_data_mut();
-        dd.dev.mmio_write(base, addr, size, value)
-    }
-}
-// ------------------------------------------------------------------------------------------------
-
-pub struct DeviceData {
+pub struct Context {
     log: std::io::LineWriter<LogWriter>,
-    dev: peripherals::TestDevice, // XXX
+    dev: Device,
 }
 
-pub fn create<'a>() -> Result<Unicorn<'a, DeviceData>, String> {
+pub fn create<'a>(cfg: config::DeviceConfig) -> Result<Unicorn<'a, Context>, String> {
 
-    let dev = DeviceData {
+    let ctx = Context {
         log: std::io::LineWriter::new(LogWriter::new()),
-        dev: peripherals::TestDevice::new(), // XXX
+        dev: Device::new(cfg)?,
     };
-    let mut emu = Unicorn::new_with_data(Arch::ARM, Mode::LITTLE_ENDIAN, dev).unwrap();
+    let mut emu = Unicorn::new_with_data(Arch::ARM, Mode::LITTLE_ENDIAN, ctx).unwrap();
 
-    // TODO - make configurable
-    emu.ctl_set_cpu_model(ArmCpuModel::UC_CPU_ARM_CORTEX_M0.into()).unwrap();
+    emu.init()?;
 
+    // probably this should go into init() as well...
     emu.setup_hooks()?;
+    emu.setup_mmio()?;
 
     // For now, let's map some "Flash" and some RAM -- TODO: remove me
-    emu.mem_map(0x0000_0000, 64 * 1024, Permission::ALL).unwrap();
+    emu.mem_map(0x0000_0000, 64 * 1024, Permission::EXEC | Permission::READ).unwrap();
     emu.mem_map(0x2000_0000, 16 * 1024, Permission::ALL).unwrap();
 
     Ok(emu)
+}
+
+// ------------------------------------------------------------------------------------------------
+use peripherals::RegisterBlock;
+use std::collections::HashMap;
+use unicorn_engine::ArmCpuModel;
+
+struct Device {
+    regblocks: HashMap<u32, Box<dyn RegisterBlock>>,
+
+    cpu_model: ArmCpuModel,
+}
+
+impl Device {
+    fn new(cfg: config::DeviceConfig) -> Result<Self, String> {
+        let cpu_model = match (cfg.cpu.arch.as_str(), cfg.cpu.model.as_str()) {
+            ("arm", "cortex-m0plus") => ArmCpuModel::UC_CPU_ARM_CORTEX_M0,
+            _ => { return Err(format!("Unsupported CPU: {}/{}",
+                    cfg.cpu.arch, cfg.cpu.model)); }
+        };
+
+        let mut device = Self {
+            regblocks: HashMap::<u32, Box<dyn RegisterBlock>>::new(),
+            cpu_model,
+        };
+
+        device.add_block(Box::new(cortex_m0::SCS::new()));
+
+        Ok(device)
+    }
+
+    fn mmio_blocks(&self) -> Vec<(u32, u32)> {
+        self.regblocks.iter().map(|(base, block)|  {
+            (*base, block.size())
+        }).collect()
+    }
+
+    fn add_block(&mut self, block: Box<dyn RegisterBlock>) {
+        self.regblocks.insert(block.base().unwrap(), block);
+    }
+
+    #[allow(dead_code)] // TODO - remove me
+    fn add_block_at(&mut self, addr:u32, block: Box<dyn RegisterBlock>) {
+        self.regblocks.insert(addr, block);
+    }
+
+    fn mmio_read(&self, base: u32, offset: u32, size: u32) -> Result<u32, String> {
+        self.get_block(base)?.read(base, offset, size)
+    }
+
+    fn mmio_write(&mut self, base: u32, offset: u32, size: u32, value: u32) -> Result<(), String> {
+        self.get_block_mut(base)?.write(base, offset, size, value)
+    }
+
+    fn get_block_mut(&mut self, base:u32) -> Result<&mut Box<dyn RegisterBlock>, String> {
+        match self.regblocks.get_mut(&base) {
+            Some(blk) => Ok(blk),
+            None => Err(format!("No register block mapped at 0x{base:08x}")),
+        }
+    }
+
+    fn get_block(&self, base:u32) -> Result<&Box<dyn RegisterBlock>, String> {
+        match self.regblocks.get(&base) {
+            Some(blk) => Ok(blk),
+            None => Err(format!("No register block mapped at 0x{base:08x}")),
+        }
+    }
+}
+
+
+// ------------------------------------------------------------------------------------------------
+pub mod config {
+
+    #[derive(serde::Deserialize)]
+    pub struct Cpu {
+        pub arch: String,
+        pub model: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    pub struct Mem {
+        pub addr: u32,
+        pub size: u32,
+        pub perm: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    pub struct DeviceConfig {
+        pub cpu: Cpu,
+        pub mem: Vec<Mem>,
+    }
+
+    impl DeviceConfig {
+        pub fn new(tomlstr: &str) -> Result<Self, String> {
+            toml::from_str::<DeviceConfig>(tomlstr).or_else(|e| {
+                Err(format!("Could not load configuration: {e}"))
+            })
+        }
+
+        pub fn default() -> Self {
+            DeviceConfig {
+                cpu: Cpu {
+                    arch: String::from("arm"),
+                    model: String::from("cortex-m0plus"),
+                },
+                mem: vec![
+                    Mem {
+                        addr: 0x0000_0000,
+                        size: 64*1024,
+                        perm: String::from("rx"),
+                    },
+                    Mem {
+                        addr: 0x2000_0000,
+                        size: 16*1024,
+                        perm: String::from("rwx"),
+                    },
+                ],
+            }
+        }
+    }
 }

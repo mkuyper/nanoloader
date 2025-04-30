@@ -2,7 +2,7 @@ use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput};
 use quote::quote;
 
-#[proc_macro_derive(RegBlock, attributes(base, offset, reset))]
+#[proc_macro_derive(RegBlock, attributes(base, size, offset, reset))]
 pub fn register_block(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
@@ -28,8 +28,8 @@ fn impl_register_block(input: &DeriveInput) -> TokenStream {
         quote! { None }
     };
 
+    let mut off: u32 = 0;
     let reginfos = if let syn::Data::Struct(data) = &input.data {
-        let mut off: u32 = 0;
         data.fields.iter().filter(|f| {
             if let syn::Type::Path(p) = &f.ty { p.path.is_ident("Register") } else { false }
         }).map(move |f| {
@@ -54,6 +54,13 @@ fn impl_register_block(input: &DeriveInput) -> TokenStream {
         }).collect::<Vec<_>>()
     } else {
         panic!("RegisterBlock can only be used on structs");
+    };
+
+    let size = if let Some(sizeattr) = input.attrs.iter().find(|a| a.path().is_ident("size")) {
+        let lit: syn::LitInt = sizeattr.parse_args().unwrap();
+        lit.base10_parse::<u32>().unwrap()
+    } else {
+        off
     };
 
     // Match statements for get() function
@@ -114,7 +121,11 @@ fn impl_register_block(input: &DeriveInput) -> TokenStream {
             }
 
             fn base(&self) -> Option<u32> {
-                #base 
+                #base
+            }
+
+            fn size(&self) -> u32 {
+                #size
             }
 
             fn name(&self) -> &'static str {
