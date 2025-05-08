@@ -156,6 +156,14 @@ impl HookHandling for Unicorn<'_, Context> {
             false
         }).or_else(|e| Err(format!("Could not set MEM_UNMAPPED hook ({e:?})")))?;
 
+        /*
+        self.add_code_hook(0, u64::MAX, |emu, address, _value| {
+            //let pc = emu.read_pc();
+            let pc = address;
+            log::trace!("[PC:{pc:08x}]");
+        }).or_else(|e| Err(format!("Could not set CODE hook ({e:?})")))?;
+        */
+
         Ok(())
     }
 }
@@ -288,11 +296,11 @@ pub struct Context {
     dev: Device,
 }
 
-pub fn create<'a>(cfg: config::DeviceConfig) -> Result<Unicorn<'a, Context>, String> {
+pub fn create_emulator<'a>(dev: Device) -> Result<Unicorn<'a, Context>, String> {
 
     let ctx = Context {
         log: std::io::LineWriter::new(LogWriter::new()),
-        dev: Device::new(cfg)?,
+        dev,
     };
     let mut emu = Unicorn::new_with_data(Arch::ARM, Mode::LITTLE_ENDIAN, ctx).unwrap();
 
@@ -314,28 +322,33 @@ use peripherals::RegisterBlock;
 use std::collections::HashMap;
 use unicorn_engine::ArmCpuModel;
 
-struct Device {
-    regblocks: HashMap<u32, Box<dyn RegisterBlock>>,
+pub enum CpuModel {
+    M0Plus,
+}
 
+pub struct Device {
+    regblocks: HashMap<u32, Box<dyn RegisterBlock>>,
     cpu_model: ArmCpuModel,
 }
 
 impl Device {
-    fn new(cfg: config::DeviceConfig) -> Result<Self, String> {
-        let cpu_model = match (cfg.cpu.arch.as_str(), cfg.cpu.model.as_str()) {
-            ("arm", "cortex-m0plus") => ArmCpuModel::UC_CPU_ARM_CORTEX_M0,
-            _ => { return Err(format!("Unsupported CPU: {}/{}",
-                    cfg.cpu.arch, cfg.cpu.model)); }
+    pub fn new(model: CpuModel) -> Self {
+        let acm = match model {
+            CpuModel::M0Plus => ArmCpuModel::UC_CPU_ARM_CORTEX_M0,
         };
 
-        let mut device = Self {
+        let mut dev = Self {
             regblocks: HashMap::<u32, Box<dyn RegisterBlock>>::new(),
-            cpu_model,
+            cpu_model: acm,
         };
 
-        device.add_block(Box::new(cortex_m0::SCS::new()));
+        match model {
+            CpuModel::M0Plus => {
+                dev.add_block(Box::new(cortex_m0::SCS::new()));
+            }
+        };
 
-        Ok(device)
+        dev
     }
 
     fn mmio_blocks(&self) -> Vec<(u32, u32)> {
@@ -378,53 +391,3 @@ impl Device {
 
 
 // ------------------------------------------------------------------------------------------------
-pub mod config {
-
-    #[derive(serde::Deserialize)]
-    pub struct Cpu {
-        pub arch: String,
-        pub model: String,
-    }
-
-    #[derive(serde::Deserialize)]
-    pub struct Mem {
-        pub addr: u32,
-        pub size: u32,
-        pub perm: String,
-    }
-
-    #[derive(serde::Deserialize)]
-    pub struct DeviceConfig {
-        pub cpu: Cpu,
-        pub mem: Vec<Mem>,
-    }
-
-    impl DeviceConfig {
-        pub fn new(tomlstr: &str) -> Result<Self, String> {
-            toml::from_str::<DeviceConfig>(tomlstr).or_else(|e| {
-                Err(format!("Could not load configuration: {e}"))
-            })
-        }
-
-        pub fn default() -> Self {
-            DeviceConfig {
-                cpu: Cpu {
-                    arch: String::from("arm"),
-                    model: String::from("cortex-m0plus"),
-                },
-                mem: vec![
-                    Mem {
-                        addr: 0x0000_0000,
-                        size: 64*1024,
-                        perm: String::from("rx"),
-                    },
-                    Mem {
-                        addr: 0x2000_0000,
-                        size: 16*1024,
-                        perm: String::from("rwx"),
-                    },
-                ],
-            }
-        }
-    }
-}

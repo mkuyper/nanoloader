@@ -26,7 +26,9 @@ fn main() {
 
     let args = <args::Args as clap::Parser>::parse();
 
-    let mut emu = device::create(device::config::DeviceConfig::default()).unwrap();
+    let dev = device::Device::new(device::CpuModel::M0Plus);
+
+    let mut emu = device::create_emulator(dev).unwrap();
 
     for mut f in args.elf {
         let mut data = Vec::new();
