@@ -5,10 +5,10 @@ use log;
 use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Permission};
 use unicorn_engine::{RegisterARM, Unicorn};
 
-mod cortex_m0;
 mod demisemihosting;
 mod intelhex;
-mod peripherals;
+
+use crate::peripherals::*;
 
 /// Emulation control
 trait EmulationControl {
@@ -68,14 +68,10 @@ trait MemoryAccess {
     }
 }
 
-/// Hook handling
-trait HookHandling {
+/// Emulator Setup
+trait EmulatorSetup {
     fn setup_hooks(&mut self) -> Result<(), String>;
-}
-
-/// Memory-mapped I/O
-trait Mmio {
-    fn setup_mmio(&mut self) -> Result<(), String>;
+    fn setup_mapping(&mut self, mapping: MemoryMapping) -> Result<(), String>;
 }
 
 /// Emulation
@@ -135,7 +131,7 @@ impl MemoryAccess for Unicorn<'_, Context> {
     }
 }
 
-impl HookHandling for Unicorn<'_, Context> {
+impl EmulatorSetup for Unicorn<'_, Context> {
     fn setup_hooks(&mut self) -> Result<(), String> {
         self.add_intr_hook(|emu, intno| {
             match intno {
@@ -166,48 +162,62 @@ impl HookHandling for Unicorn<'_, Context> {
 
         Ok(())
     }
-}
 
-impl Mmio for Unicorn<'_, Context> {
-    fn setup_mmio(&mut self) -> Result<(), String> {
-        let ctx = self.get_data();
+    fn setup_mapping(&mut self, mapping: MemoryMapping) -> Result<(), String> {
+        match mapping {
+            MemoryMapping::Mmio { base, size } => {
+                log::debug!("Mapping MMIO segment at 0x{:08x} ({} bytes)", base, size);
 
-        for (base, size) in ctx.dev.mmio_blocks() {
-            log::debug!("Mapping MMIO segment at 0x{:08x} ({} bytes)", base, size);
-
-            self.mmio_map(base as u64, size as usize,
-                Some(move |emu:&mut Unicorn<'_, Context>, addr, size| {
-                    let ctx = emu.get_data();
-                    match ctx.dev.mmio_read(base, addr as u32, size as u32) {
-                        Ok(x) => x as u64,
-                        Err(e) => {
-                            log::error!("mmio read failed: {e}");
-                            // TODO - trap? exception?
-                            0_u64
+                self.mmio_map(base as u64, size as usize,
+                    Some(move |emu:&mut Unicorn<'_, Context>, addr, size| {
+                        let ctx = emu.get_data();
+                        match ctx.dev.mmio_read(base, addr as u32, size as u32) {
+                            Ok(x) => x as u64,
+                            Err(e) => {
+                                log::error!("mmio read failed: {e}");
+                                // TODO - trap? exception?
+                                0_u64
+                            }
                         }
-                    }
-                }),
-                Some(move |emu:&mut Unicorn<'_, Context>, addr, size, value| {
-                    let ctx = emu.get_data_mut();
-                    match ctx.dev.mmio_write(base, addr as u32, size as u32, value as u32) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            log::error!("mmio write failed: {e}");
-                            // TODO - trap? exception?
+                    }),
+                    Some(move |emu:&mut Unicorn<'_, Context>, addr, size, value| {
+                        let ctx = emu.get_data_mut();
+                        match ctx.dev.mmio_write(base, addr as u32, size as u32, value as u32) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                log::error!("mmio write failed: {e}");
+                                // TODO - trap? exception?
+                            }
                         }
-                    }
-                }))
-            .or_else(|e| Err(format!("Could not map MMIO segment ({e:?})")))?;
+                    }))
+                .or_else(|e| Err(format!("Could not map MMIO segment ({e:?})")))
+            },
+            MemoryMapping::Direct { base, ptr, size, perms } => {
+                log::debug!("Mapping memory segment at 0x{:08x} ({} bytes)", base, size);
+                unsafe {
+                    self.mem_map_ptr(base as u64, size as usize,
+                        Permission::from(perms), ptr as *mut std::ffi::c_void)
+                }.or_else(|e| Err(format!("Could not map raw segment ({e:?})")))
+            },
         }
-        Ok(())
     }
 }
 
 impl Emulation for Unicorn<'_, Context> {
     fn init(&mut self) -> Result<(), String> {
-        let ctx = self.get_data();
+        self.ctl_set_cpu_model(self.get_data().dev.cpu_model.into()).or_else(|e|
+            Err(format!("Error setting CPU model ({e:?})"))
+        )?;
 
-        self.ctl_set_cpu_model(ctx.dev.cpu_model.into()).unwrap();
+        let mappings: Vec<_> = self.get_data_mut().dev.peripherals.iter_mut().map(|p| {
+            p.mappings()
+        }).flatten().map(|m| {
+            m.clone()
+        }).collect();
+
+        for m in mappings {
+            self.setup_mapping(m)?;
+        }
 
         Ok(())
     }
@@ -308,17 +318,15 @@ pub fn create_emulator<'a>(dev: Device) -> Result<Unicorn<'a, Context>, String> 
 
     // probably this should go into init() as well...
     emu.setup_hooks()?;
-    emu.setup_mmio()?;
 
     // For now, let's map some "Flash" and some RAM -- TODO: remove me
-    emu.mem_map(0x0000_0000, 64 * 1024, Permission::EXEC | Permission::READ).unwrap();
-    emu.mem_map(0x2000_0000, 16 * 1024, Permission::ALL).unwrap();
+    //emu.mem_map(0x0000_0000, 64 * 1024, Permission::EXEC | Permission::READ).unwrap();
+    //emu.mem_map(0x2000_0000, 16 * 1024, Permission::ALL).unwrap();
 
     Ok(emu)
 }
 
 // ------------------------------------------------------------------------------------------------
-use peripherals::RegisterBlock;
 use std::collections::HashMap;
 use unicorn_engine::ArmCpuModel;
 
@@ -327,65 +335,66 @@ pub enum CpuModel {
 }
 
 pub struct Device {
-    regblocks: HashMap<u32, Box<dyn RegisterBlock>>,
+    peripherals: Vec<Box<dyn Peripheral>>,
+    mmio_mappings: HashMap<u32, usize>,
     cpu_model: ArmCpuModel,
 }
 
 impl Device {
-    pub fn new(model: CpuModel) -> Self {
+    pub fn new(model: CpuModel, peripherals: Vec<Box<dyn Peripheral>>) -> Self {
         let acm = match model {
             CpuModel::M0Plus => ArmCpuModel::UC_CPU_ARM_CORTEX_M0,
         };
 
-        let mut dev = Self {
-            regblocks: HashMap::<u32, Box<dyn RegisterBlock>>::new(),
+        let dev = Self {
+            peripherals: peripherals,
+            mmio_mappings: HashMap::<u32, usize>::new(),
             cpu_model: acm,
         };
 
         match model {
             CpuModel::M0Plus => {
-                dev.add_block(Box::new(cortex_m0::SCS::new()));
+                //dev.add_block(Box::new(cortex_m0::SCS::new()));
             }
         };
 
         dev
     }
 
-    fn mmio_blocks(&self) -> Vec<(u32, u32)> {
-        self.regblocks.iter().map(|(base, block)|  {
-            (*base, block.size())
-        }).collect()
+    fn get_peripheral_idx(&self, base:u32) -> Result<usize, String> {
+        self.mmio_mappings.get(&base).map(|i| *i).ok_or_else(|| {
+            format!("No peripheral mapped at 0x{base:08x}")
+        })
     }
 
-    fn add_block(&mut self, block: Box<dyn RegisterBlock>) {
-        self.regblocks.insert(block.base().unwrap(), block);
+    fn get_peripheral(&self, base:u32) -> Result<&Box<dyn Peripheral>, String> {
+        let idx = self.get_peripheral_idx(base)?;
+        Ok(&self.peripherals[idx])
     }
 
-    #[allow(dead_code)] // TODO - remove me
-    fn add_block_at(&mut self, addr:u32, block: Box<dyn RegisterBlock>) {
-        self.regblocks.insert(addr, block);
+    fn get_peripheral_mut(&mut self, base:u32) -> Result<&mut Box<dyn Peripheral>, String> {
+        let idx = self.get_peripheral_idx(base)?;
+        Ok(&mut self.peripherals[idx])
     }
 
     fn mmio_read(&self, base: u32, offset: u32, size: u32) -> Result<u32, String> {
-        self.get_block(base)?.read(base, offset, size)
+        self.get_peripheral(base)?.mmio_read(base, offset, size)
     }
 
     fn mmio_write(&mut self, base: u32, offset: u32, size: u32, value: u32) -> Result<(), String> {
-        self.get_block_mut(base)?.write(base, offset, size, value)
+        self.get_peripheral_mut(base)?.mmio_write(base, offset, size, value)
     }
+}
 
-    fn get_block_mut(&mut self, base:u32) -> Result<&mut Box<dyn RegisterBlock>, String> {
-        match self.regblocks.get_mut(&base) {
-            Some(blk) => Ok(blk),
-            None => Err(format!("No register block mapped at 0x{base:08x}")),
-        }
-    }
+impl From<Permissions> for unicorn_engine::Permission {
+    fn from(p: Permissions) -> Self {
+        let mut q = unicorn_engine::Permission::NONE;
 
-    fn get_block(&self, base:u32) -> Result<&Box<dyn RegisterBlock>, String> {
-        match self.regblocks.get(&base) {
-            Some(blk) => Ok(blk),
-            None => Err(format!("No register block mapped at 0x{base:08x}")),
-        }
+        if p.r { q |= unicorn_engine::Permission::READ; }
+        if p.w { q |= unicorn_engine::Permission::WRITE; }
+        if p.x { q |= unicorn_engine::Permission::EXEC; }
+
+        q
     }
 }
 

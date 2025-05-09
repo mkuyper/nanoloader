@@ -1,7 +1,10 @@
 mod device;
+mod peripherals;
 
 use std::io::Read;
 use device::Emulation;
+
+use peripherals::generic::{FlashController, Sram};
 
 mod args {
     #[derive(clap::Parser)]
@@ -26,7 +29,11 @@ fn main() {
 
     let args = <args::Args as clap::Parser>::parse();
 
-    let dev = device::Device::new(device::CpuModel::M0Plus);
+    let peripherals: Vec<Box<dyn peripherals::Peripheral>> = vec!(
+        Box::new(Sram::new(0x2000_0000, 4 * 1024, None)),
+        Box::new(FlashController::new(0x0000_0000, 64 * 1024, None)),
+    );
+    let dev = device::Device::new(device::CpuModel::M0Plus, peripherals);
 
     let mut emu = device::create_emulator(dev).unwrap();
 

@@ -1,5 +1,5 @@
 use moonbow_macros::RegBlock;
-use super::peripherals::*;
+use super::*;
 
 #[derive(RegBlock)]
 #[base(0xe000e000)]
