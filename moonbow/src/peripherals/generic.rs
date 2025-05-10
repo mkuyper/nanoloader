@@ -1,41 +1,8 @@
 use super::*;
 
+use pow2::Pow2;
+
 use moonbow_macros::Peripheral;
-use moonbow_macros::RegBlock;
-
-pub struct OldFlashController {
-    name: &'static str,
-    base: u32,
-    data: Box<[u8]>,
-}
-
-impl OldFlashController {
-    pub fn new(base: u32, size: u32, name: Option<&'static str>) -> Self {
-        let name = name.unwrap_or("FLASH");
-        let data = vec![0; size as usize].into_boxed_slice();
-        Self {
-            name,
-            base,
-            data
-        }
-    }
-}
-
-impl Peripheral for OldFlashController {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn mappings(&mut self) -> Vec<MemoryMapping> {
-        let mm = MemoryMapping::Direct {
-            base: self.base,
-            ptr: self.data.as_mut_ptr(),
-            size: self.data.len() as u32,
-            perms: Permissions { r: true, w: false, x: true },
-        };
-        vec!(mm)
-    }
-}
 
 pub struct Sram {
     name: &'static str,
@@ -81,14 +48,25 @@ pub struct FlashController {
     data: Box<[u8]>,
 
     #[register]
-    CMDTYPE:u32,
+    reg_addr: u32,
+
     #[register]
-    CMDEXEC:(),
+    reg_data: u32,
+
+    #[register]
+    #[read_const(0)]
+    reg_write: (),
+
+    #[register]
+    #[read_const(0)]
+    reg_erase: (),
 }
 
 impl FlashController {
-    pub fn new(flash_base: u32, size: u32, ctrl_base: u32, name: Option<&'static str>) -> Self {
+    pub fn new(flash_base: u32, page_size: Pow2, page_count: u32,
+            ctrl_base: u32, name: Option<&'static str>) -> Self {
         let name = name.unwrap_or("FLASH");
+        let size = page_count * page_size;
         let data = vec![0; size as usize].into_boxed_slice();
         Self {
             name,
@@ -99,8 +77,12 @@ impl FlashController {
         }
     }
 
-    fn get_CMDEXEC(&self) -> Result<u32, String> {
-        Ok(0)
+    fn set_reg_write(&mut self, _value: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_reg_erase(&mut self, _value: u32) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -125,12 +107,10 @@ impl Peripheral for FlashController {
     }
 
     fn mmio_read(&self, base: u32, offset: u32, size: u32) -> Result<u32, String> {
-        self.read_register(base, offset).and_then(|v| {
-            if size == 4 && (offset & 3) == 0 {
-                Ok(v)
-            } else {
-                Err(String::from("unaligned access"))
-            }
-        })
+        self.read_registers(base, offset, size)
+    }
+
+    fn mmio_write(&mut self, base: u32, offset: u32, size: u32, value: u32) -> Result<(), String> {
+        self.write_registers(base, offset, size, value)
     }
 }

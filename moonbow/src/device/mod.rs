@@ -341,22 +341,34 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn new(model: CpuModel, peripherals: Vec<Box<dyn Peripheral>>) -> Self {
+    pub fn new(model: CpuModel, mut peripherals: Vec<Box<dyn Peripheral>>) -> Self {
         let acm = match model {
             CpuModel::M0Plus => ArmCpuModel::UC_CPU_ARM_CORTEX_M0,
         };
 
-        let dev = Self {
+        match model {
+            CpuModel::M0Plus => {
+                // TODO - SCS should be special as it contains the NVIC
+                peripherals.push(Box::new(cortex_m0::SCS::new()));
+            }
+        };
+
+        let mut dev = Self {
             peripherals: peripherals,
             mmio_mappings: HashMap::<u32, usize>::new(),
             cpu_model: acm,
         };
 
-        match model {
-            CpuModel::M0Plus => {
-                //dev.add_block(Box::new(cortex_m0::SCS::new()));
+        for (idx, p) in dev.peripherals.iter_mut().enumerate() {
+            for m in p.mappings() {
+                match m {
+                    MemoryMapping::Mmio { base, .. } => {
+                        dev.mmio_mappings.insert(base, idx);
+                    }
+                    _ => {}
+                }
             }
-        };
+        }
 
         dev
     }
