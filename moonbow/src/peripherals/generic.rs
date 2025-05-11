@@ -58,13 +58,13 @@ pub struct FlashController {
     reg_data: u32,
 
     #[register(read_const=0)]
-    reg_program: (),
-
-    #[register(read_const=0)]
-    reg_erase: (),
+    reg_command: (),
 }
 
 impl FlashController {
+    pub const CMD_PROGRAM: u32 = 0x860cd758;
+    pub const CMD_ERASE: u32   = 0x4c6f315f;
+
     pub fn new(flash_base: u32, page_size: Pow2, page_count: u32,
             ctrl_base: u32, name: Option<&'static str>) -> Self {
         let name = name.unwrap_or("FLASH");
@@ -81,8 +81,7 @@ impl FlashController {
             reg_status: 0,
             reg_addr: 0,
             reg_data: 0,
-            reg_program: (),
-            reg_erase: (),
+            reg_command: (),
         }
     }
 
@@ -90,22 +89,32 @@ impl FlashController {
         addr >= self.flash_base && addr < (self.flash_base + self.data.len() as u32)
     }
 
-    fn set_reg_program(&mut self, _value: u32) -> Result<(), String> {
-        let addr = Pow2::align_of::<u32>().align_down(self.reg_addr);
+    fn calc_off(&self, addr: u32) -> Option<usize> {
         if self.check_addr(addr) {
-            let off = (addr - self.flash_base) as usize;
-            let word = &mut self.data[off .. off + 4];
-            let v = byteorder::LittleEndian::read_u32(word);
-            byteorder::LittleEndian::write_u32(word, self.reg_data & v);
+            Some((addr - self.flash_base) as usize)
+        } else {
+            None
         }
-        Ok(())
     }
 
-    fn set_reg_erase(&mut self, _value: u32) -> Result<(), String> {
-        let addr = self.page_size.align_down(self.reg_addr);
-        if self.check_addr(addr) {
-            let off = (addr - self.flash_base) as usize;
-            self.data[off..off + Into::<usize>::into(self.page_size)].fill(0xff);
+    fn set_reg_command(&mut self, value: u32) -> Result<(), String> {
+        match value {
+            FlashController::CMD_PROGRAM => {
+                let addr = Pow2::align_of::<u32>().align_down(self.reg_addr);
+                if let Some(off) = self.calc_off(addr) {
+                    let word = &mut self.data[off .. off + 4];
+                    let v = byteorder::LittleEndian::read_u32(word);
+                    byteorder::LittleEndian::write_u32(word, self.reg_data & v);
+                }
+            }
+            FlashController::CMD_ERASE => {
+                let addr = self.page_size.align_down(self.reg_addr);
+                if let Some(off) = self.calc_off(addr) {
+                    let pgsz: usize = self.page_size.into();
+                    self.data[off .. off + pgsz].fill(0xff);
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
