@@ -2,7 +2,7 @@ use byteorder::ByteOrder;
 
 use log;
 
-use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Permission};
+use unicorn_engine::unicorn_const::{Arch, HookType, MemType, Mode, Permission};
 use unicorn_engine::{RegisterARM, Unicorn};
 
 mod demisemihosting;
@@ -134,36 +134,80 @@ impl MemoryAccess for Unicorn<'_, Context> {
     }
 }
 
+fn handle_intr(emu: &mut Unicorn<'_, Context>, intno: u32) {
+    match intno {
+        7 => {
+            demisemihosting::dispatch(emu).unwrap();
+        }
+        _ => {
+            panic!("Unsupported interrupt {}", intno);
+        }
+    }
+}
+
+fn handle_insn_invalid(emu: &mut Unicorn<'_, Context>) -> bool {
+    let pc = emu.read_pc();
+    log::error!("[PC:{:08x}] invalid instruction", pc);
+    false
+}
+
+fn handle_mmio_read(emu: &mut Unicorn<'_, Context>, address: u64, length: usize, base: u32) -> u64 {
+    let ctx = emu.get_data();
+
+    ctx.dev
+        .mmio_read(base, address as u32, length as u32)
+        .unwrap_or_else(|e| {
+            log::error!("mmio read failed: {e}");
+            // TODO - trap? exception?
+            0
+        }) as u64
+}
+
+fn handle_mmio_write(
+    emu: &mut Unicorn<'_, Context>,
+    address: u64,
+    length: usize,
+    value: u64,
+    base: u32,
+) {
+    let ctx = emu.get_data_mut();
+
+    ctx.dev
+        .mmio_write(base, address as u32, length as u32, value as u32)
+        .unwrap_or_else(|e| {
+            log::error!("mmio write failed: {e}");
+            // TODO - trap? exception?
+        });
+}
+
+fn handle_mem_unmapped(
+    emu: &mut Unicorn<'_, Context>,
+    access: MemType,
+    address: u64,
+    length: usize,
+    _value: i64,
+) -> bool {
+    let pc = emu.read_pc();
+    log::error!(
+        "[PC:{:08x}] {:?} at 0x{:08x} ({} bytes)",
+        pc,
+        access,
+        address,
+        length
+    );
+    false
+}
+
 impl EmulatorSetup for Unicorn<'_, Context> {
     fn setup_hooks(&mut self) -> Result<(), String> {
-        self.add_intr_hook(|emu, intno| match intno {
-            7 => {
-                demisemihosting::dispatch(emu).unwrap();
-            }
-            _ => {
-                panic!("Unsupported interrupt {}", intno);
-            }
-        })
-        .or_else(|e| Err(format!("Could not set INTR hook ({e:?})")))?;
+        self.add_intr_hook(handle_intr)
+            .or_else(|e| Err(format!("Could not set INTR hook ({e:?})")))?;
 
-        self.add_insn_invalid_hook(|emu| {
-            let pc = emu.read_pc();
-            log::error!("[PC:{pc:08x}] invalid instruction");
-            false
-        })
-        .or_else(|e| Err(format!("Could not set INSN_INVALID hook ({e:?})")))?;
+        self.add_insn_invalid_hook(handle_insn_invalid)
+            .or_else(|e| Err(format!("Could not set INSN_INVALID hook ({e:?})")))?;
 
-        self.add_mem_hook(
-            HookType::MEM_UNMAPPED,
-            1,
-            0,
-            |emu, access, address, length, _value| {
-                let pc = emu.read_pc();
-                log::error!("[PC:{pc:08x}] {access:?} to 0x{address:08x} ({length} bytes)");
-                false
-            },
-        )
-        .or_else(|e| Err(format!("Could not set MEM_UNMAPPED hook ({e:?})")))?;
+        self.add_mem_hook(HookType::MEM_UNMAPPED, 1, 0, handle_mem_unmapped)
+            .or_else(|e| Err(format!("Could not set MEM_UNMAPPED hook ({e:?})")))?;
 
         /*
         self.add_code_hook(0, u64::MAX, |emu, address, _value| {
@@ -184,29 +228,11 @@ impl EmulatorSetup for Unicorn<'_, Context> {
                 self.mmio_map(
                     base as u64,
                     size as usize,
-                    Some(move |emu: &mut Unicorn<'_, Context>, addr, size| {
-                        let ctx = emu.get_data();
-                        match ctx.dev.mmio_read(base, addr as u32, size as u32) {
-                            Ok(x) => x as u64,
-                            Err(e) => {
-                                log::error!("mmio read failed: {e}");
-                                // TODO - trap? exception?
-                                0_u64
-                            }
-                        }
+                    Some(move |emu: &mut Unicorn<'_, _>, address, length| {
+                        handle_mmio_read(emu, address, length, base)
                     }),
-                    Some(move |emu: &mut Unicorn<'_, Context>, addr, size, value| {
-                        let ctx = emu.get_data_mut();
-                        match ctx
-                            .dev
-                            .mmio_write(base, addr as u32, size as u32, value as u32)
-                        {
-                            Ok(_) => {}
-                            Err(e) => {
-                                log::error!("mmio write failed: {e}");
-                                // TODO - trap? exception?
-                            }
-                        }
+                    Some(move |emu: &mut Unicorn<'_, _>, address, length, value| {
+                        handle_mmio_write(emu, address, length, value, base)
                     }),
                 )
                 .or_else(|e| Err(format!("Could not map MMIO segment ({e:?})")))
@@ -250,6 +276,8 @@ impl Emulation for Unicorn<'_, Context> {
         for m in mappings {
             self.setup_mapping(m)?;
         }
+
+        self.setup_hooks()?;
 
         Ok(())
     }
@@ -355,13 +383,6 @@ pub fn create_emulator<'a>(dev: Device) -> Result<Unicorn<'a, Context>, String> 
     let mut emu = Unicorn::new_with_data(Arch::ARM, Mode::LITTLE_ENDIAN, ctx).unwrap();
 
     emu.init()?;
-
-    // probably this should go into init() as well...
-    emu.setup_hooks()?;
-
-    // For now, let's map some "Flash" and some RAM -- TODO: remove me
-    //emu.mem_map(0x0000_0000, 64 * 1024, Permission::EXEC | Permission::READ).unwrap();
-    //emu.mem_map(0x2000_0000, 16 * 1024, Permission::ALL).unwrap();
 
     Ok(emu)
 }
