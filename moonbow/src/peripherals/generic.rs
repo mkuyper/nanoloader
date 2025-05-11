@@ -58,7 +58,7 @@ pub struct FlashController {
     reg_data: u32,
 
     #[register(read_const=0)]
-    reg_write: (),
+    reg_program: (),
 
     #[register(read_const=0)]
     reg_erase: (),
@@ -81,7 +81,7 @@ impl FlashController {
             reg_status: 0,
             reg_addr: 0,
             reg_data: 0,
-            reg_write: (),
+            reg_program: (),
             reg_erase: (),
         }
     }
@@ -90,11 +90,13 @@ impl FlashController {
         addr >= self.flash_base && addr < (self.flash_base + self.data.len() as u32)
     }
 
-    fn set_reg_write(&mut self, _value: u32) -> Result<(), String> {
+    fn set_reg_program(&mut self, _value: u32) -> Result<(), String> {
         let addr = Pow2::align_of::<u32>().align_down(self.reg_addr);
         if self.check_addr(addr) {
             let off = (addr - self.flash_base) as usize;
-            byteorder::LittleEndian::write_u32(&mut self.data[off..off + 4], self.reg_data);
+            let word = &mut self.data[off .. off + 4];
+            let v = byteorder::LittleEndian::read_u32(word);
+            byteorder::LittleEndian::write_u32(word, self.reg_data & v);
         }
         Ok(())
     }
