@@ -47,18 +47,19 @@ pub struct FlashController {
 
     data: Box<[u8]>,
 
+    #[register(write_nop)]
+    reg_status: u32,
+
     #[register]
     reg_addr: u32,
 
     #[register]
     reg_data: u32,
 
-    #[register]
-    #[read_const(0)]
+    #[register(read_const=0)]
     reg_write: (),
 
-    #[register]
-    #[read_const(0)]
+    #[register(read_const=0)]
     reg_erase: (),
 }
 

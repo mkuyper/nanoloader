@@ -4,8 +4,7 @@ use super::*;
 #[derive(Default)]
 #[derive(Peripheral)]
 pub struct SCS {
-    #[register]
-    #[offset(0xd08)]
+    #[register(offset=0xd08)]
     vtor: u32,
 }
 

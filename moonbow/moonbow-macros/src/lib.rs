@@ -14,18 +14,123 @@ struct Register {
     write_nop: bool,
 }
 
-#[proc_macro_derive(Peripheral, attributes(register, offset, reset, read_const, write_nop))]
+#[proc_macro_derive(Peripheral, attributes(register))]
 pub fn peripheral(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     impl_peripheral(&input)
 }
 
+fn get_ident(path: &syn::Path) -> Result<&syn::Ident, TokenStream> {
+    path.get_ident().ok_or_else(|| {
+        quote_spanned! {
+            path.span() => compile_error!("Expected identifier");
+        }.into()
+    })
+}
+
+fn ensure_none(expr: Option<syn::Expr>) -> Result<(), TokenStream> {
+    match expr {
+        None => Ok(()),
+        _ => {
+            Err(quote_spanned! {
+                expr.span() => compile_error!("Unexpected value");
+            }.into())
+        }
+    }
+}
+
+fn get_int(name: &syn::Ident, expr: Option<syn::Expr>) -> Result<u32, TokenStream> {
+    let expr = expr.ok_or_else(|| {
+        Into::<TokenStream>::into(quote_spanned! {
+            name.span() => compile_error!("Expected integer value");
+        })
+    })?;
+    match expr {
+        syn::Expr::Lit(syn::ExprLit{lit: syn::Lit::Int(i), ..}) => {
+            let value = i.base10_parse::<u32>().or_else(|e| Err(e.to_compile_error()))?;
+            Ok(value)
+        }
+        _ => {
+            Err(quote_spanned! {
+                expr.span() => compile_error!("Expected integer literal");
+            }.into())
+        }
+    }
+}
+
+#[derive(Default)]
+struct RegisterSettings {
+    offset: Option<u32>,
+    reset: u32,
+    read_const: Option<u32>,
+    write_nop: bool,
+}
+
+fn process_register_attr(attr: &syn::Attribute, rs: &mut RegisterSettings) -> Result<(), TokenStream> {
+    match &attr.meta {
+        syn::Meta::List(arglist) => {
+            let args = arglist.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
+            ).unwrap();
+
+            for arg in args {
+                let name_value: (syn::Ident, Option<syn::Expr>) = match arg {
+                    syn::Meta::Path(p) => {
+                        (get_ident(&p)?.clone(), None)
+                    }
+                    syn::Meta::NameValue(nv) => {
+                        let n = get_ident(&nv.path)?;
+                        (n.clone(), Some(nv.value))
+                    }
+                    syn::Meta::List(l) => {
+                        return Err(quote_spanned! {
+                            l.delimiter.span().join() => compile_error!("Unexpected argument");
+                        }.into());
+                    }
+                };
+                match name_value {
+                    (n, v) if n == "offset" => {
+                        let off = get_int(&n, v.clone())?;
+                        if (off & 3) != 0 {
+                            return Err(quote_spanned! {
+                                v.span() => compile_error!("Offset must be on word boundary");
+                            }.into());
+                        }
+                        rs.offset = Some(off);
+                    }
+                    (n, v) if n == "read_const" => {
+                        rs.read_const = Some(get_int(&n, v)?);
+                    }
+                    (n, v) if n == "reset" => {
+                        rs.reset = get_int(&n, v)?;
+                    }
+                    (n, v) if n == "write_nop" => {
+                        ensure_none(v)?;
+                        rs.write_nop = true;
+                    }
+                    (n, _) => {
+                        return Err(quote_spanned! {
+                            n.span() => compile_error!("Unknown argument");
+                        }.into());
+                    }
+                };
+            }
+        }
+        _ => {
+            // bare attribute, no arguments
+        }
+    }
+
+    Ok(())
+}
+
 fn impl_peripheral(input: &DeriveInput) -> TokenStream {
     let name = &input.ident;
     //let namestr = name.to_string();
 
-    let mut off: u32 = 0;
+    let mut offset: u32 = 0;
+
     let reginfos = if let syn::Data::Struct(data) = &input.data {
         data.fields.iter().filter(|f| f.attrs.iter().any(|a| {
             a.path().is_ident("register")
@@ -39,33 +144,27 @@ fn impl_peripheral(input: &DeriveInput) -> TokenStream {
                     });
                 }
             }
-            let mut reset = 0;
-            let mut read_const: Option<u32> = None;
-            let mut write_nop = false;
+
+            let mut rs = RegisterSettings::default();
             for attr in &f.attrs {
-                if attr.path().is_ident("offset") {
-                    let lit: syn::LitInt = attr.parse_args().unwrap();
-                    off = lit.base10_parse().unwrap();
-                    assert!((off & 3) == 0, "Register address must be aligned on word boundary")
-                } else if attr.path().is_ident("reset") {
-                    let lit: syn::LitInt = attr.parse_args().unwrap();
-                    reset = lit.base10_parse().unwrap();
-                } else if attr.path().is_ident("read_const") {
-                    let lit: syn::LitInt = attr.parse_args().unwrap();
-                    read_const = Some(lit.base10_parse().unwrap());
-                } else if attr.path().is_ident("write_nop") {
-                    write_nop = true;
+                if attr.path().is_ident("register") {
+                    process_register_attr(attr, &mut rs)?;
                 }
             }
+
+            if let Some(new_offset) = rs.offset {
+                offset = new_offset;
+            }
+
             let r = Register {
                 name: f.ident.clone().unwrap(),
                 ty: f.ty.clone(),
-                offset: off,
-                reset,
-                read_const,
-                write_nop,
+                offset,
+                reset: rs.reset,
+                read_const: rs.read_const,
+                write_nop: rs.write_nop,
             };
-            off += 4;
+            offset += 4;
             Ok(r)
         }).collect::<Vec<_>>()
     } else {
