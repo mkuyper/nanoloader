@@ -1,10 +1,9 @@
-use moonbow_macros::Peripheral;
 use super::*;
+use moonbow_macros::Peripheral;
 
-#[derive(Default)]
-#[derive(Peripheral)]
+#[derive(Default, Peripheral)]
 pub struct SCS {
-    #[register(offset=0xd08)]
+    #[register(offset = 0xd08)]
     vtor: u32,
 }
 
@@ -22,12 +21,10 @@ impl Peripheral for SCS {
     }
 
     fn mappings(&mut self) -> Vec<MemoryMapping> {
-        vec![
-            MemoryMapping::Mmio {
-                base: 0xe000e000,
-                size: 4096,
-            },
-        ]
+        vec![MemoryMapping::Mmio {
+            base: 0xe000e000,
+            size: 4096,
+        }]
     }
 
     fn mmio_read(&self, base: u32, offset: u32, size: u32) -> Result<u32, String> {

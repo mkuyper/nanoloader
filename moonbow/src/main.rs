@@ -18,7 +18,6 @@ mod args {
         /// Load Intel HEX file
         #[arg(short, long)]
         pub ihex: Vec<clio::Input>,
-
     }
 }
 
@@ -30,10 +29,16 @@ fn main() {
 
     let args = <args::Args as clap::Parser>::parse();
 
-    let peripherals: Vec<Box<dyn peripherals::Peripheral>> = vec!(
+    let peripherals: Vec<Box<dyn peripherals::Peripheral>> = vec![
         Box::new(Sram::new(0x2000_0000, 4 * 1024, None)),
-        Box::new(FlashController::new(0x0000_0000, pow2_const!(1024), 64, 0x4000_000, None)),
-    );
+        Box::new(FlashController::new(
+            0x0000_0000,
+            pow2_const!(1024),
+            64,
+            0x4000_000,
+            None,
+        )),
+    ];
     let dev = device::Device::new(device::CpuModel::M0Plus, peripherals);
 
     let mut emu = device::create_emulator(dev).unwrap();

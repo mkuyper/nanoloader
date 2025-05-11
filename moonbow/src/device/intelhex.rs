@@ -9,8 +9,8 @@ pub struct Segment {
 }
 
 pub fn segments(hexdata: &[u8]) -> Result<Vec<Segment>, String> {
-    let hexstr = core::str::from_utf8(hexdata)
-        .or_else(|e| Err(format!("Invalid UTF-8 string ({e:?})")))?;
+    let hexstr =
+        core::str::from_utf8(hexdata).or_else(|e| Err(format!("Invalid UTF-8 string ({e:?})")))?;
 
     let reader = ihex::Reader::new(&hexstr);
 
@@ -22,9 +22,7 @@ pub fn segments(hexdata: &[u8]) -> Result<Vec<Segment>, String> {
     let mut segment_start = 0_usize;
 
     for rec in reader {
-        let rec = rec.or_else(|e| {
-            Err(format!("Invalid record: {e}"))
-        })?;
+        let rec = rec.or_else(|e| Err(format!("Invalid record: {e}")))?;
         match rec {
             ihex::Record::Data { offset, mut value } => {
                 let segment_addr = segment_start + segment_buf.len();
@@ -33,7 +31,10 @@ pub fn segments(hexdata: &[u8]) -> Result<Vec<Segment>, String> {
 
                 if addr != segment_addr {
                     if segment_buf.len() > 0 {
-                        segments.push(Segment { address: segment_start, data: segment_buf });
+                        segments.push(Segment {
+                            address: segment_start,
+                            data: segment_buf,
+                        });
                     }
 
                     segment_buf = Vec::<u8>::new();
@@ -43,7 +44,10 @@ pub fn segments(hexdata: &[u8]) -> Result<Vec<Segment>, String> {
             }
             ihex::Record::EndOfFile => {
                 if segment_buf.len() > 0 {
-                    segments.push(Segment { address: segment_start, data: segment_buf });
+                    segments.push(Segment {
+                        address: segment_start,
+                        data: segment_buf,
+                    });
                 }
                 return Ok(segments);
             }
@@ -53,7 +57,7 @@ pub fn segments(hexdata: &[u8]) -> Result<Vec<Segment>, String> {
             ihex::Record::ExtendedLinearAddress(ela) => {
                 address_base = (ela as usize) << 16;
             }
-            _ =>  ()
+            _ => (),
         }
     }
     Err(String::from("Unexpected end of file"))

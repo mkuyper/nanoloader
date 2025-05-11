@@ -56,8 +56,7 @@ trait MemoryAccess {
 
     fn read_str(&mut self, address: u32, length: u32) -> Result<String, String> {
         self.read_buf(address, length).and_then(|buf| {
-            String::from_utf8(buf)
-                .or_else(|e| Err(format!("Invalid UTF-8 string ({e:?})")))
+            String::from_utf8(buf).or_else(|e| Err(format!("Invalid UTF-8 string ({e:?})")))
         })
     }
 
@@ -93,8 +92,10 @@ trait Debug {
 impl EmulationControl for Unicorn<'_, Context> {
     fn stop_emu(&mut self, result: Result<(), String>) {
         match result {
-            Err(e) => { log::error!("{e}"); }
-            _ => ()
+            Err(e) => {
+                log::error!("{e}");
+            }
+            _ => (),
         };
         self.emu_stop().unwrap();
         log::debug!("Emulation stopped");
@@ -126,31 +127,43 @@ impl MemoryAccess for Unicorn<'_, Context> {
     fn read_into(&mut self, address: u32, destination: &mut [u8]) -> Result<(), String> {
         self.mem_read(address as u64, destination).or_else(|e| {
             let n = destination.len();
-            Err(format!("Could not read {n} bytes at 0x{address:08x} ({e:?})"))
+            Err(format!(
+                "Could not read {n} bytes at 0x{address:08x} ({e:?})"
+            ))
         })
     }
 }
 
 impl EmulatorSetup for Unicorn<'_, Context> {
     fn setup_hooks(&mut self) -> Result<(), String> {
-        self.add_intr_hook(|emu, intno| {
-            match intno {
-                7 => { demisemihosting::dispatch(emu).unwrap(); }
-                _ => { panic!("Unsupported interrupt {}", intno); }
+        self.add_intr_hook(|emu, intno| match intno {
+            7 => {
+                demisemihosting::dispatch(emu).unwrap();
             }
-        }).or_else(|e| Err(format!("Could not set INTR hook ({e:?})")))?;
+            _ => {
+                panic!("Unsupported interrupt {}", intno);
+            }
+        })
+        .or_else(|e| Err(format!("Could not set INTR hook ({e:?})")))?;
 
         self.add_insn_invalid_hook(|emu| {
             let pc = emu.read_pc();
             log::error!("[PC:{pc:08x}] invalid instruction");
             false
-        }).or_else(|e| Err(format!("Could not set INSN_INVALID hook ({e:?})")))?;
+        })
+        .or_else(|e| Err(format!("Could not set INSN_INVALID hook ({e:?})")))?;
 
-        self.add_mem_hook(HookType::MEM_UNMAPPED, 1, 0, |emu, access, address, length, _value| {
-            let pc = emu.read_pc();
-            log::error!("[PC:{pc:08x}] {access:?} to 0x{address:08x} ({length} bytes)");
-            false
-        }).or_else(|e| Err(format!("Could not set MEM_UNMAPPED hook ({e:?})")))?;
+        self.add_mem_hook(
+            HookType::MEM_UNMAPPED,
+            1,
+            0,
+            |emu, access, address, length, _value| {
+                let pc = emu.read_pc();
+                log::error!("[PC:{pc:08x}] {access:?} to 0x{address:08x} ({length} bytes)");
+                false
+            },
+        )
+        .or_else(|e| Err(format!("Could not set MEM_UNMAPPED hook ({e:?})")))?;
 
         /*
         self.add_code_hook(0, u64::MAX, |emu, address, _value| {
@@ -168,8 +181,10 @@ impl EmulatorSetup for Unicorn<'_, Context> {
             MemoryMapping::Mmio { base, size } => {
                 log::debug!("Mapping MMIO segment at 0x{:08x} ({} bytes)", base, size);
 
-                self.mmio_map(base as u64, size as usize,
-                    Some(move |emu:&mut Unicorn<'_, Context>, addr, size| {
+                self.mmio_map(
+                    base as u64,
+                    size as usize,
+                    Some(move |emu: &mut Unicorn<'_, Context>, addr, size| {
                         let ctx = emu.get_data();
                         match ctx.dev.mmio_read(base, addr as u32, size as u32) {
                             Ok(x) => x as u64,
@@ -180,40 +195,57 @@ impl EmulatorSetup for Unicorn<'_, Context> {
                             }
                         }
                     }),
-                    Some(move |emu:&mut Unicorn<'_, Context>, addr, size, value| {
+                    Some(move |emu: &mut Unicorn<'_, Context>, addr, size, value| {
                         let ctx = emu.get_data_mut();
-                        match ctx.dev.mmio_write(base, addr as u32, size as u32, value as u32) {
+                        match ctx
+                            .dev
+                            .mmio_write(base, addr as u32, size as u32, value as u32)
+                        {
                             Ok(_) => {}
                             Err(e) => {
                                 log::error!("mmio write failed: {e}");
                                 // TODO - trap? exception?
                             }
                         }
-                    }))
+                    }),
+                )
                 .or_else(|e| Err(format!("Could not map MMIO segment ({e:?})")))
-            },
-            MemoryMapping::Direct { base, ptr, size, perms } => {
+            }
+            MemoryMapping::Direct {
+                base,
+                ptr,
+                size,
+                perms,
+            } => {
                 log::debug!("Mapping memory segment at 0x{:08x} ({} bytes)", base, size);
                 unsafe {
-                    self.mem_map_ptr(base as u64, size as usize,
-                        Permission::from(perms), ptr as *mut std::ffi::c_void)
-                }.or_else(|e| Err(format!("Could not map raw segment ({e:?})")))
-            },
+                    self.mem_map_ptr(
+                        base as u64,
+                        size as usize,
+                        Permission::from(perms),
+                        ptr as *mut std::ffi::c_void,
+                    )
+                }
+                .or_else(|e| Err(format!("Could not map raw segment ({e:?})")))
+            }
         }
     }
 }
 
 impl Emulation for Unicorn<'_, Context> {
     fn init(&mut self) -> Result<(), String> {
-        self.ctl_set_cpu_model(self.get_data().dev.cpu_model.into()).or_else(|e|
-            Err(format!("Error setting CPU model ({e:?})"))
-        )?;
+        self.ctl_set_cpu_model(self.get_data().dev.cpu_model.into())
+            .or_else(|e| Err(format!("Error setting CPU model ({e:?})")))?;
 
-        let mappings: Vec<_> = self.get_data_mut().dev.peripherals.iter_mut().map(|p| {
-            p.mappings()
-        }).flatten().map(|m| {
-            m.clone()
-        }).collect();
+        let mappings: Vec<_> = self
+            .get_data_mut()
+            .dev
+            .peripherals
+            .iter_mut()
+            .map(|p| p.mappings())
+            .flatten()
+            .map(|m| m.clone())
+            .collect();
 
         for m in mappings {
             self.setup_mapping(m)?;
@@ -236,10 +268,18 @@ impl Emulation for Unicorn<'_, Context> {
     }
 
     fn load_segment(&mut self, address: u32, data: &[u8]) -> Result<(), String> {
-        log::debug!("Loading segment at 0x{:08x} ({} bytes)", address, data.len());
+        log::debug!(
+            "Loading segment at 0x{:08x} ({} bytes)",
+            address,
+            data.len()
+        );
 
         self.mem_write(address as u64, data).or_else(|e| {
-            Err(format!("Could not write {} bytes at 0x{:08x} ({e:?})", data.len(), address))
+            Err(format!(
+                "Could not write {} bytes at 0x{:08x} ({e:?})",
+                data.len(),
+                address
+            ))
         })
     }
 
@@ -249,16 +289,17 @@ impl Emulation for Unicorn<'_, Context> {
 
         match elffile.segments() {
             Some(segments) => {
-                for phdr in segments.iter().filter(|phdr| {
-                    phdr.p_type == elf::abi::PT_LOAD && phdr.p_filesz > 0
-                }) {
+                for phdr in segments
+                    .iter()
+                    .filter(|phdr| phdr.p_type == elf::abi::PT_LOAD && phdr.p_filesz > 0)
+                {
                     let data = elffile.segment_data(&phdr).unwrap();
 
                     self.load_segment(phdr.p_paddr as u32, data)?;
                 }
                 Ok(())
             }
-            None => Err(String::from("No segments found in ELF file"))
+            None => Err(String::from("No segments found in ELF file")),
         }
     }
 
@@ -278,7 +319,7 @@ impl Debug for Unicorn<'_, Context> {
     }
 }
 
-struct LogWriter { }
+struct LogWriter {}
 
 impl LogWriter {
     pub fn new() -> LogWriter {
@@ -307,7 +348,6 @@ pub struct Context {
 }
 
 pub fn create_emulator<'a>(dev: Device) -> Result<Unicorn<'a, Context>, String> {
-
     let ctx = Context {
         log: std::io::LineWriter::new(LogWriter::new()),
         dev,
@@ -373,18 +413,19 @@ impl Device {
         dev
     }
 
-    fn get_peripheral_idx(&self, base:u32) -> Result<usize, String> {
-        self.mmio_mappings.get(&base).map(|i| *i).ok_or_else(|| {
-            format!("No peripheral mapped at 0x{base:08x}")
-        })
+    fn get_peripheral_idx(&self, base: u32) -> Result<usize, String> {
+        self.mmio_mappings
+            .get(&base)
+            .map(|i| *i)
+            .ok_or_else(|| format!("No peripheral mapped at 0x{base:08x}"))
     }
 
-    fn get_peripheral(&self, base:u32) -> Result<&Box<dyn Peripheral>, String> {
+    fn get_peripheral(&self, base: u32) -> Result<&Box<dyn Peripheral>, String> {
         let idx = self.get_peripheral_idx(base)?;
         Ok(&self.peripherals[idx])
     }
 
-    fn get_peripheral_mut(&mut self, base:u32) -> Result<&mut Box<dyn Peripheral>, String> {
+    fn get_peripheral_mut(&mut self, base: u32) -> Result<&mut Box<dyn Peripheral>, String> {
         let idx = self.get_peripheral_idx(base)?;
         Ok(&mut self.peripherals[idx])
     }
@@ -394,7 +435,8 @@ impl Device {
     }
 
     fn mmio_write(&mut self, base: u32, offset: u32, size: u32, value: u32) -> Result<(), String> {
-        self.get_peripheral_mut(base)?.mmio_write(base, offset, size, value)
+        self.get_peripheral_mut(base)?
+            .mmio_write(base, offset, size, value)
     }
 }
 
@@ -402,13 +444,18 @@ impl From<Permissions> for unicorn_engine::Permission {
     fn from(p: Permissions) -> Self {
         let mut q = unicorn_engine::Permission::NONE;
 
-        if p.r { q |= unicorn_engine::Permission::READ; }
-        if p.w { q |= unicorn_engine::Permission::WRITE; }
-        if p.x { q |= unicorn_engine::Permission::EXEC; }
+        if p.r {
+            q |= unicorn_engine::Permission::READ;
+        }
+        if p.w {
+            q |= unicorn_engine::Permission::WRITE;
+        }
+        if p.x {
+            q |= unicorn_engine::Permission::EXEC;
+        }
 
         q
     }
 }
-
 
 // ------------------------------------------------------------------------------------------------
