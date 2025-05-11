@@ -1,5 +1,6 @@
 use super::*;
 
+use byteorder::ByteOrder;
 use pow2::Pow2;
 
 use moonbow_macros::Peripheral;
@@ -38,13 +39,13 @@ impl Peripheral for Sram {
     }
 }
 
-#[derive(Default)]
 #[derive(Peripheral)]
 pub struct FlashController {
     name: &'static str,
     flash_base: u32,
     ctrl_base: u32,
 
+    page_size: Pow2,
     data: Box<[u8]>,
 
     #[register(write_nop)]
@@ -68,21 +69,42 @@ impl FlashController {
             ctrl_base: u32, name: Option<&'static str>) -> Self {
         let name = name.unwrap_or("FLASH");
         let size = page_count * page_size;
-        let data = vec![0; size as usize].into_boxed_slice();
+        let data = vec![0xff; size as usize].into_boxed_slice();
         Self {
             name,
             flash_base,
             ctrl_base,
+            page_size,
             data,
-            ..Default::default()
+
+            // TODO - macro-fy this somehow?
+            reg_status: 0,
+            reg_addr: 0,
+            reg_data: 0,
+            reg_write: (),
+            reg_erase: (),
         }
     }
 
+    fn check_addr(&self, addr: u32) -> bool {
+        addr >= self.flash_base && addr < (self.flash_base + self.data.len() as u32)
+    }
+
     fn set_reg_write(&mut self, _value: u32) -> Result<(), String> {
+        let addr = Pow2::align_of::<u32>().align_down(self.reg_addr);
+        if self.check_addr(addr) {
+            let off = (addr - self.flash_base) as usize;
+            byteorder::LittleEndian::write_u32(&mut self.data[off..off + 4], self.reg_data);
+        }
         Ok(())
     }
 
     fn set_reg_erase(&mut self, _value: u32) -> Result<(), String> {
+        let addr = self.page_size.align_down(self.reg_addr);
+        if self.check_addr(addr) {
+            let off = (addr - self.flash_base) as usize;
+            self.data[off..off + Into::<usize>::into(self.page_size)].fill(0xff);
+        }
         Ok(())
     }
 }
