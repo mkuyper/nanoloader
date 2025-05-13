@@ -1,0 +1,16 @@
+MEMORY {
+    BL_CODE : ORIGIN = 0x00000000, LENGTH = 15K
+    BL_OPTS : ORIGIN = 0x00003C00, LENGTH = 1K
+
+    FW_CODE : ORIGIN = 0x00004000, LENGTH = 48K
+
+    RAM     : ORIGIN = 0x20000000, LENGTH = 4K
+}
+
+REGION_ALIAS("FLASH", BL_CODE);
+
+SECTIONS {
+    .bl_opts : {
+        KEEP(*(.bl_opts*))
+    } >BL_OPTS
+}

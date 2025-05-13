@@ -1,0 +1,27 @@
+[package]
+name = "testloader"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.5"
+cortex-m-semihosting = "0.5.0"
+crc = "3.3.0"
+nanoloader = { version = "0.1.0", path = "../nanoloader" }
+pow2 = "0.1.1"
+volatile-register = "0.2.2"
+
+[[bin]]
+name = "testloader"
+test = false
+bench = false
+doctest = false
+
+[profile.dev]
+opt-level = "z"
+lto = true
+
+[profile.release]
+opt-level = "z"
+lto = true
