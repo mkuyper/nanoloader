@@ -1,19 +1,23 @@
 > [!NOTE]
-> My main motivation at this point for this project is for me to learn about
-> and play around with Rust on (tiny) embedded systems and to tinker with
-> building an emulation framework for Cortex-M based devices. I have no idea
-> where this journey will ultimately take me...
+> My main motivation for this project is to learn and play with Rust. So yeah,
+> stuff here may suck until I get the hang of things (if ever).
 
-# Nano Loader
-[![Rust](https://img.shields.io/badge/Rust-%23000000.svg?e&logo=rust&logoColor=white)](#)
+# Subprojects
 
-<p align="center">
-<img width="250" src="nanoloader/src/.doc/nanoloader.png">
-</p>
+## Nano Loader
 
-_Nano Loader_ is an update-capable bootloader inspired by [Basic
+<img width="100" src="nanoloader/src/.doc/nanoloader.png">
+
+[Nano Loader](nanoloader/) is an update-capable bootloader inspired by [Basic
 Loader](https://github.com/mkuyper/basicloader).
 
-Nano Loader is intended to be portable to any Cortex-M based device, but the
-first target platform for Nano Loader is TI's
-[MSPM0C1104](https://www.ti.com/product/MSPM0C1104).
+## Moonbow
+<img width="100" src="moonbow/src/.doc/moonbow.png">
+
+[Moonbow](moonbow/) is an embedded device emulation suite for ARM Cortex-M
+devices intended to eventually enable test-driven development.
+
+## Test Loader
+
+[Test Loader](testloader/) is a basic bootloader implementation using Nano
+Loader that runs on Moonbow.
