@@ -24,14 +24,14 @@ pub trait NanoHal {
     fn update_address() -> Option<usize>;
     fn update_clear();
 
-    fn program_start() -> NanoResult<()>;
-    fn program_write(value: u8) -> NanoResult<()>;
-    fn program_read(offset: usize) -> NanoResult<u8>;
-    fn program_finish() -> NanoResult<()>;
+    fn program_start(&mut self) -> NanoResult<()>;
+    fn program_write(&mut self, value: u8) -> NanoResult<()>;
+    fn program_read(&mut self, offset: usize) -> NanoResult<u8>;
+    fn program_finish(&mut self) -> NanoResult<()>;
 }
 
-pub fn boot<HAL: NanoHal>(_hal: HAL) -> ! {
-    process_update::<HAL>();
+pub fn boot<HAL: NanoHal>(mut hal: HAL) -> ! {
+    process_update::<HAL>(&mut hal);
     start_firmware::<HAL>();
 }
 
@@ -108,11 +108,11 @@ struct Update {
     data: &'static [u8],
 }
 
-fn process_update<HAL: NanoHal>() {
+fn process_update<HAL: NanoHal>(hal: &mut HAL) {
     if let Some(update) = check_update::<HAL>() {
         match update.info.uptype {
             UpdateInfo::TYPE_PLAIN => {
-                install_plain::<HAL>(update);
+                install_plain::<HAL>(hal, update);
             }
             _ => {
                 // unknown or unsupported update type
@@ -172,18 +172,18 @@ fn check_update<HAL: NanoHal>() -> Option<Update> {
 }
 
 /// Install a plain update
-fn install_plain<HAL: NanoHal>(update: Update) -> Option<()> {
+fn install_plain<HAL: NanoHal>(hal: &mut HAL, update: Update) -> Option<()> {
     // Check update size
     ensure(update.info.fwsize as usize == update.data.len())?;
     let size = HAL::FW_PAGE_SZ.align_up(update.info.fwsize)?;
     ensure(HAL::FW_START.checked_add(size as usize)? <= update.address)?;
 
     // Copy new firmware into place
-    HAL::program_start().ok()?;
+    hal.program_start().ok()?;
     for b in update.data {
-        HAL::program_write(*b).ok()?;
+        hal.program_write(*b).ok()?;
     }
-    HAL::program_finish().ok()?;
+    hal.program_finish().ok()?;
 
     Some(())
 }
