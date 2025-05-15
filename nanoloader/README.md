@@ -2,7 +2,7 @@
 [![Rust](https://img.shields.io/badge/Rust-%23000000.svg?e&logo=rust&logoColor=white)](#)
 
 <p align="center">
-<img width="250" src="nanoloader/src/.doc/nanoloader.png">
+<img width="250" src="src/.doc/nanoloader.png">
 </p>
 
 _Nano Loader_ is an update-capable bootloader inspired by [Basic
