@@ -66,9 +66,9 @@ mod tests {
 
         fn get(&mut self, idx: isize) -> u8 {
             if idx < 0 {
-                *&self.dict[(self.dict.len() as isize + idx) as usize]
+                self.dict[(self.dict.len() as isize + idx) as usize]
             } else {
-                *&self.buffer[idx as usize]
+                self.buffer[idx as usize]
             }
         }
     }
@@ -95,7 +95,7 @@ mod tests {
         let mut sink = BufferSink::<1024> {
             length: 0,
             buffer: [0; 1024],
-            dict: dict,
+            dict,
         };
 
         let result = decompress(compressed, &mut sink);

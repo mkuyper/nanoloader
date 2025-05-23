@@ -3,12 +3,13 @@
 pub mod lz4;
 
 #[derive(Debug)]
-pub enum AbortReason {
+pub enum NanoReason {
+    HalError(u16),
     FwSizeInvalid,
     FwCrcMismatch,
 }
 
-pub type NanoResult<T> = Result<T, ()>;
+pub type NanoResult<T = ()> = Result<T, NanoReason>;
 
 pub trait NanoHal {
     const FW_START: usize;
@@ -17,76 +18,84 @@ pub trait NanoHal {
 
     const FW_PAGE_SZ: pow2::Pow2;
 
-    fn abort(reason: AbortReason) -> !;
+    fn abort(reason: NanoReason) -> !;
 
     fn checksum(data: &[u8]) -> u32;
 
     fn update_address() -> Option<usize>;
     fn update_clear();
 
-    fn program_start(&mut self) -> NanoResult<()>;
-    fn program_write(&mut self, value: u8) -> NanoResult<()>;
+    fn program_start(&mut self) -> NanoResult;
+    fn program_write(&mut self, value: u8) -> NanoResult;
     fn program_read(&mut self, offset: usize) -> NanoResult<u8>;
-    fn program_finish(&mut self) -> NanoResult<()>;
+    fn program_finish(&mut self) -> NanoResult;
 }
 
 pub fn boot<HAL: NanoHal>(mut hal: HAL) -> ! {
+    // Process any pending update
     process_update::<HAL>(&mut hal);
-    start_firmware::<HAL>();
-}
 
-fn start_firmware<HAL: NanoHal>() -> ! {
-    // SAFETY: It is assumed that the HAL const parameters are valid.
-    let fwsize = unsafe { core::ptr::read((HAL::FW_START + HAL::FW_SIZE_OFF) as *const usize) };
+    // Verify firmware is valid
+    check_firmware::<HAL>().unwrap_or_else(|e| HAL::abort(e));
 
-    // Check fwsize
-    if fwsize == 0 || fwsize > (HAL::FW_END - HAL::FW_START) {
-        HAL::abort(AbortReason::FwSizeInvalid);
-    }
-
-    // Calculate CRC address
-    let fwcrc_addr = match HAL::FW_START.checked_add(fwsize) {
-        Some(addr) => addr,
-        None => HAL::abort(AbortReason::FwSizeInvalid),
-    };
-
-    // Check that CRC is not past firmware area and verify alignment
-    if fwcrc_addr > (HAL::FW_END - size_of::<u32>()) {
-        HAL::abort(AbortReason::FwSizeInvalid);
-    }
-    let fwcrc_ptr = fwcrc_addr as *const u32;
-    if !fwcrc_ptr.is_aligned() {
-        HAL::abort(AbortReason::FwSizeInvalid);
-    }
-
-    // SAFETY: CRC pointer address and alignment have been checked.
-    let fwcrc_exp = unsafe { core::ptr::read(fwcrc_ptr) };
-
-    // SAFETY: It is assumed that the HAL const parameters are valid, and fwsize has been checked.
-    let fwslice = unsafe { core::slice::from_raw_parts(HAL::FW_START as *const u8, fwsize) };
-
-    // Calculate firmware CRC
-    let fwcrc_act = HAL::checksum(fwslice);
-
-    // Check firmware CRC
-    if fwcrc_act != fwcrc_exp {
-        HAL::abort(AbortReason::FwCrcMismatch);
-    }
-
-    // SAFETY: Writing to VTOR is always safe.
+    // SAFETY: Since firmware is valid, we can assume that it is safe to boot into it
     unsafe {
+        // Set VTOR to start of firmware (always safe on Cortex-M)
         (*cortex_m::peripheral::SCB::PTR)
             .vtor
             .write(HAL::FW_START as u32);
-    }
 
-    // SAFETY: Since CRC of firmware is valid, we assume that it is safe to boot into it.
-    unsafe {
+        // 3 .. 2 .. 1 .. lift-off!
         cortex_m::asm::bootload(HAL::FW_START as *const u32);
     }
 }
 
+#[inline]
+#[must_use]
+fn ensure(b: bool) -> Option<()> {
+    b.then_some(())
+}
+
+fn read_checked<T: Copy>(slice: &[u8], offset: usize) -> Option<T> {
+    slice
+        .get(offset..offset.checked_add(size_of::<T>())?)
+        .map(|s| s.as_ptr() as *const T)
+        .and_then(|ptr| ptr.is_aligned().then_some(ptr))
+        // SAFETY: Pointer range and alignment just verified
+        .map(|ptr| unsafe { core::ptr::read(ptr) })
+}
+
+fn get_fwarea<HAL: NanoHal>() -> &'static [u8] {
+    // SAFETY: It is assumed that the HAL's const parameters are valid.
+    unsafe { core::slice::from_raw_parts(HAL::FW_START as *const u8, HAL::FW_END - HAL::FW_START) }
+}
+
+fn check_firmware<HAL: NanoHal>() -> NanoResult {
+    let fwarea = get_fwarea::<HAL>();
+
+    // Read firmware size
+    let fwsize =
+        read_checked::<usize>(fwarea, HAL::FW_SIZE_OFF).ok_or(NanoReason::FwSizeInvalid)?;
+
+    // Split firmware area from rest
+    let (firmware, rest) = fwarea
+        .split_at_checked(fwsize)
+        .ok_or(NanoReason::FwSizeInvalid)?;
+
+    // Read expected firmware CRC
+    let fwcrc_exp = read_checked::<u32>(rest, 0).ok_or(NanoReason::FwSizeInvalid)?;
+
+    // Calculate firmware CRC
+    let fwcrc_act = HAL::checksum(firmware);
+
+    // Check firmware CRC
+    ensure(fwcrc_act == fwcrc_exp).ok_or(NanoReason::FwCrcMismatch)?;
+
+    Ok(())
+}
+
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 struct UpdateInfo {
     /// Update checksum (includes everything except this field)
     checksum: u32,
@@ -119,18 +128,15 @@ fn process_update<HAL: NanoHal>(hal: &mut HAL) {
             }
         }
 
-        // TODO - If there a transient error occured during programming, the update might be
-        // recoverable even if the firmware is now in an inconsistent state. If we clear the update
-        // pointer unconditionally here, we risk bricking a device that can still be saved.
+        // If a transient error occured during programming, the update might be recoverable even if
+        // the firmware is now in an inconsistent state. Unconditionally clearing the update
+        // pointer here would risk bricking a device that can still be saved. It is safer to only
+        // clear the update if there is a valid firmware in Flash.
 
-        HAL::update_clear();
+        if check_firmware::<HAL>().is_ok() {
+            HAL::update_clear();
+        }
     }
-}
-
-#[inline]
-#[must_use]
-fn ensure(b: bool) -> Option<()> {
-    b.then_some(())
 }
 
 /// Check if there is a valid update available
@@ -138,27 +144,17 @@ fn check_update<HAL: NanoHal>() -> Option<Update> {
     // Ask HAL if a potential update exists
     let upinfo_addr = HAL::update_address()?;
 
-    // Check that update info header is inside firmware area
-    ensure(upinfo_addr >= HAL::FW_START)?;
-    ensure(upinfo_addr < (HAL::FW_END - size_of::<UpdateInfo>()))?;
+    // Calculate offset of update into firmware area
+    let upinfo_off = upinfo_addr.checked_sub(HAL::FW_START)?;
 
-    // Verify alignment
-    let upinfo_ptr = upinfo_addr as *const UpdateInfo;
-    ensure(upinfo_ptr.is_aligned())?;
+    let fwarea = get_fwarea::<HAL>();
 
     // Read the update info header
-    // SAFETY: Validity of pointer has just been checked.
-    let upinfo = unsafe { core::ptr::read(upinfo_ptr) };
-
-    // Check update size
-    ensure(upinfo.upsize as usize >= size_of::<UpdateInfo>())?;
-    let update_end = upinfo_addr.checked_add(upinfo.upsize as usize)?;
-    ensure(update_end <= HAL::FW_END)?;
+    let upinfo = read_checked::<UpdateInfo>(fwarea, upinfo_off)?;
 
     // Create slice for entire update
-    // SAFETY: Size of update has just been checked.
-    let upslice =
-        unsafe { core::slice::from_raw_parts(upinfo_addr as *const u8, upinfo.upsize as usize) };
+    let update_end = upinfo_off.checked_add(upinfo.upsize as usize)?;
+    let upslice = fwarea.get(upinfo_off..update_end)?;
 
     let checksum = HAL::checksum(upslice.get(size_of::<u32>()..)?);
 
