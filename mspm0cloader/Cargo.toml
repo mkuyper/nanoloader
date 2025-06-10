@@ -1,0 +1,20 @@
+[package]
+name = "mspm0cloader"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.5"
+crc = "3.3.0"
+mspm0-metapac = { version = "0.0.1", features = ["mspm0c1104ruk", "rt"], path = "../../mspm0-data/build/mspm0-metapac" }
+nanoloader = { version = "0.1.0", path = "../nanoloader" }
+pow2 = "0.1.1"
+
+[profile.dev]
+opt-level = "z"
+lto = true
+
+[profile.release]
+opt-level = "z"
+lto = true

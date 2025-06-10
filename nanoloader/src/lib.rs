@@ -10,6 +10,11 @@ pub enum NanoReason {
 }
 
 pub type NanoResult<T = ()> = Result<T, NanoReason>;
+pub const OK: NanoResult = Ok(());
+pub trait Ignore {
+    fn ignore_result(&self) {}
+}
+impl<T> Ignore for NanoResult<T> {}
 
 pub trait NanoHal {
     const FW_START: usize;
@@ -91,7 +96,7 @@ fn check_firmware<HAL: NanoHal>() -> NanoResult {
     // Check firmware CRC
     ensure(fwcrc_act == fwcrc_exp).ok_or(NanoReason::FwCrcMismatch)?;
 
-    Ok(())
+    OK
 }
 
 #[repr(C)]
