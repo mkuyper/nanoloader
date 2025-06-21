@@ -20,8 +20,7 @@ pub trait NanoHal {
     const FW_START: usize;
     const FW_END: usize;
     const FW_SIZE_OFF: usize;
-
-    const FW_PAGE_SZ: pow2::Pow2;
+    const FW_PAGE_SZ: usize;
 
     fn abort(reason: NanoReason) -> !;
 
@@ -93,6 +92,17 @@ fn check_firmware<HAL: NanoHal>() -> NanoResult {
     // Calculate firmware CRC
     let fwcrc_act = HAL::checksum(firmware);
 
+    // Log information
+    if fwcrc_act == fwcrc_exp {
+        log::info!("Firmware CRC verified: 0x{:08x}", fwcrc_act);
+    } else {
+        log::warn!(
+            "Firmware CRC verification failed: exp=0x{:08x}, act=0x{:08x}",
+            fwcrc_exp,
+            fwcrc_act
+        );
+    }
+
     // Check firmware CRC
     ensure(fwcrc_act == fwcrc_exp).ok_or(NanoReason::FwCrcMismatch)?;
 
@@ -141,6 +151,8 @@ fn process_update<HAL: NanoHal>(hal: &mut HAL) {
         if check_firmware::<HAL>().is_ok() {
             HAL::update_clear();
         }
+    } else {
+        log::info!("No pending update found");
     }
 }
 
@@ -175,8 +187,9 @@ fn check_update<HAL: NanoHal>() -> Option<Update> {
 /// Install a plain update
 fn install_plain<HAL: NanoHal>(hal: &mut HAL, update: Update) -> Option<()> {
     // Check update size
+    const { assert!(HAL::FW_PAGE_SZ.next_power_of_two() == HAL::FW_PAGE_SZ) }
     ensure(update.info.fwsize as usize == update.data.len())?;
-    let size = HAL::FW_PAGE_SZ.align_up(update.info.fwsize)?;
+    let size = pow2::pow2_const!(HAL::FW_PAGE_SZ).align_up(update.info.fwsize)?;
     ensure(HAL::FW_START.checked_add(size as usize)? <= update.address)?;
 
     // Copy new firmware into place

@@ -4,12 +4,33 @@
 use cortex_m_semihosting::debug;
 use cortex_m_semihosting::hprintln;
 use crc;
+use log::{Log, Level, Metadata, Record};
 use volatile_register::{RO, RW, WO};
 
-use nanoloader::{NanoHal, NanoResult};
+use nanoloader::{NanoHal, NanoReason, NanoResult};
+
+struct Logger{}
+impl Log for Logger {
+    fn enabled(&self, _metadata: &Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &Record) {
+        hprintln!("[NL] LOG - {}", record.args());
+    }
+
+    fn flush(&self) { }
+}
+static LOGGER: Logger = Logger {};
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
+    unsafe {
+        log::set_logger_racy(&LOGGER).unwrap();
+        log::set_max_level_racy(Level::Info.to_level_filter());
+    }
+
+    log::info!("hi there!");
     hprintln!("[NL] Starting");
 
     let hal = TestHal {
@@ -50,9 +71,9 @@ impl NanoHal for TestHal {
     const FW_START: usize = (16 * 1024);
     const FW_END: usize = (64 * 1024);
     const FW_SIZE_OFF: usize = 0x30;
-    const FW_PAGE_SZ: pow2::Pow2 = pow2::pow2_const!(1024);
+    const FW_PAGE_SZ: usize = 1024;
 
-    fn abort(reason: nanoloader::AbortReason) -> ! {
+    fn abort(reason: NanoReason) -> ! {
         hprintln!("[NL] ABORT - {:?}", reason);
         debug::exit(debug::EXIT_FAILURE);
         // not reached
@@ -93,7 +114,7 @@ impl NanoHal for TestHal {
         self.current_prog_addr = Self::FW_START as u32;
         self.current_prog_data = 0;
 
-        Ok(())
+        nanoloader::OK
     }
 
     fn program_write(&mut self, value: u8) -> NanoResult<()> {
@@ -104,7 +125,7 @@ impl NanoHal for TestHal {
         if Self::WORD_SZ.is_aligned(self.current_prog_addr) {
             let addr = self.current_prog_addr - size_of::<u32>() as u32;
 
-            if Self::FW_PAGE_SZ.is_aligned(addr) {
+            if pow2::pow2_const!(Self::FW_PAGE_SZ).is_aligned(addr) {
                 hprintln!("[NL] Erasing flash page at 0x{:08x}", addr);
                 unsafe {
                     (*TestHal::FLASH).addr.write(addr);
@@ -120,11 +141,11 @@ impl NanoHal for TestHal {
             }
             self.current_prog_data = 0;
         }
-        Ok(())
+        nanoloader::OK
     }
 
     fn program_read(&mut self, _offset: usize) -> NanoResult<u8> {
-        Err(())
+        Err(NanoReason::HalError(0))
     }
 
     fn program_finish(&mut self) -> NanoResult<()> {
@@ -134,7 +155,7 @@ impl NanoHal for TestHal {
 
         hprintln!("[NL] Programming completed");
 
-        Ok(())
+        nanoloader::OK
     }
 }
 
